@@ -1,0 +1,12 @@
+# Compiled binaries
+opx
+opx-darwin-arm64
+opx-darwin-amd64
+opx-linux-amd64
+
+# Test binaries from `go test -c`
+*.test
+
+# Go workspace files
+go.work
+go.work.sum
