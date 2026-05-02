@@ -22,6 +22,7 @@ import (
 	"github.com/bestdan/opx/internal/caller"
 	"github.com/bestdan/opx/internal/oprunner"
 	"github.com/bestdan/opx/internal/prompt"
+	"github.com/bestdan/opx/internal/uri"
 )
 
 // Exit codes.
@@ -33,28 +34,31 @@ const (
 )
 
 func main() {
+	runner := oprunner.New()
+
 	// Recover from panics so the session forget still runs.
 	defer func() {
 		if r := recover(); r != nil {
-			r2 := oprunner.New()
-			if err := r2.ForgetSession(); err != nil {
+			if err := runner.ForgetSession(); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: op session forget failed after panic: %v\n", err)
 			}
 			fmt.Fprintf(os.Stderr, "panic: %v\n", r)
 			os.Exit(exitOpFail)
 		}
 	}()
-	os.Exit(run(os.Args[1:], oprunner.New(), prompt.New()))
+	os.Exit(run(os.Args[1:], os.Getenv("OPX_CONFIG"), runner, prompt.New()))
 }
 
 // run is the main logic, separated from main() so it is testable.
-func run(args []string, r oprunner.Runner, c prompt.Confirmer) int {
+// configPath overrides the default allowlist location (~/.config/opx/allowlist.json)
+// when non-empty; tests pass a temp path here.
+func run(args []string, configPath string, r oprunner.Runner, c prompt.Confirmer) int {
 	if len(args) == 0 {
 		printUsage()
 		return exitUsage
 	}
 
-	var uri string
+	var opURI string
 
 	switch {
 	case args[0] == "get":
@@ -62,7 +66,7 @@ func run(args []string, r oprunner.Runner, c prompt.Confirmer) int {
 			fmt.Fprintln(os.Stderr, "usage: opx get <name>")
 			return exitUsage
 		}
-		al, err := allowlist.Load("")
+		al, err := allowlist.Load(configPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 			return exitConfig
@@ -72,10 +76,10 @@ func run(args []string, r oprunner.Runner, c prompt.Confirmer) int {
 			fmt.Fprintf(os.Stderr, "config error: name %q not found in allowlist\n", args[1])
 			return exitConfig
 		}
-		uri = resolved
+		opURI = resolved
 
-	case oprunner.IsOPURI(args[0]):
-		uri = args[0]
+	case uri.IsOPURI(args[0]):
+		opURI = args[0]
 
 	default:
 		fmt.Fprintf(os.Stderr, "usage error: %q is not a valid op:// URI\n", args[0])
@@ -83,7 +87,7 @@ func run(args []string, r oprunner.Runner, c prompt.Confirmer) int {
 		return exitUsage
 	}
 
-	return confirmAndRead(uri, r, c)
+	return confirmAndRead(opURI, r, c)
 }
 
 // confirmAndRead shows the confirmation dialog and, if approved, reads the secret.

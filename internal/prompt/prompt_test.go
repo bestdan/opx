@@ -27,9 +27,13 @@ func TestFakeConfirmer_Allow(t *testing.T) {
 }
 
 func TestFakeConfirmer_Deny(t *testing.T) {
-	fc := &fakeConfirmer{err: errors.New("access denied by user")}
-	if err := fc.Confirm("op://V/I/f", "bash"); err == nil {
-		t.Error("expected error, got nil")
+	fc := &fakeConfirmer{err: prompt.ErrDenied}
+	err := fc.Confirm("op://V/I/f", "bash")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, prompt.ErrDenied) {
+		t.Errorf("expected errors.Is(err, ErrDenied) to be true, got %v", err)
 	}
 }
 

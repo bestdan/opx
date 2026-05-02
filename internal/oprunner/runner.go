@@ -7,13 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-
-	"github.com/bestdan/opx/internal/uri"
 )
-
-// IsOPURI is a convenience re-export of uri.IsOPURI so callers that already
-// import oprunner do not need a separate uri import.
-func IsOPURI(s string) bool { return uri.IsOPURI(s) }
 
 // Runner abstracts op CLI invocations so the real binary can be swapped out
 // in tests.

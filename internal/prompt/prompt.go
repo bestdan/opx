@@ -9,6 +9,7 @@ package prompt
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,10 +17,15 @@ import (
 	"strings"
 )
 
+// ErrDenied is returned by Confirm when the user explicitly denies access or
+// when no UI/TTY is available to ask. Tooling failures (e.g. osascript missing)
+// are wrapped with %w so callers can still detect them via errors.Is.
+var ErrDenied = errors.New("access denied by user")
+
 // Confirmer presents the user with a confirmation dialog.
 type Confirmer interface {
 	// Confirm asks the user whether to allow callerName to read the secret at
-	// uri.  Returns nil on Allow, a non-nil error on Deny/Cancel.
+	// uri.  Returns nil on Allow, ErrDenied on Deny/Cancel/no-UI.
 	Confirm(uri, callerName string) error
 }
 
@@ -52,8 +58,9 @@ func confirmDarwin(uri, callerName string) error {
 	cmd := exec.Command("osascript", "-e", script)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		// exit status 1 means the user clicked Deny or pressed Escape.
-		return fmt.Errorf("access denied by user")
+		// exit status 1 means the user clicked Deny or pressed Escape; any
+		// other error (osascript missing, etc.) is also treated as denial.
+		return ErrDenied
 	}
 	return nil
 }
@@ -80,7 +87,7 @@ func confirmZenity(uri, callerName string) error {
 	)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("access denied by user")
+		return ErrDenied
 	}
 	return nil
 }
@@ -91,24 +98,23 @@ func confirmZenity(uri, callerName string) error {
 func confirmTTY(uri, callerName string) error {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
-		// No controlling terminal — deny by default.
-		return fmt.Errorf("no display and no controlling terminal; access denied")
+		return ErrDenied
 	}
 	defer tty.Close()
 
-	fmt.Fprintf(tty, "\n┌─────────────────────────────────────────┐\n")
-	fmt.Fprintf(tty, "│       opx - Secret Access Request       │\n")
-	fmt.Fprintf(tty, "└─────────────────────────────────────────┘\n")
+	fmt.Fprintf(tty, "\n+-----------------------------------------+\n")
+	fmt.Fprintf(tty, "|       opx - Secret Access Request       |\n")
+	fmt.Fprintf(tty, "+-----------------------------------------+\n")
 	fmt.Fprintf(tty, "\n%q wants to read:\n  %s\n\n", callerName, uri)
 	fmt.Fprintf(tty, "Allow? [y/N]: ")
 
 	scanner := bufio.NewScanner(tty)
 	if !scanner.Scan() {
-		return fmt.Errorf("access denied (no input)")
+		return ErrDenied
 	}
 	answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
 	if answer == "y" || answer == "yes" {
 		return nil
 	}
-	return fmt.Errorf("access denied by user")
+	return ErrDenied
 }

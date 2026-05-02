@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/bestdan/opx/internal/uri"
 )
@@ -21,6 +22,7 @@ type Allowlist struct {
 //
 // Load validates:
 //   - the file exists and is readable
+//   - the file is owned by the current user (Unix only)
 //   - the file is not world-readable (mode & 0o004 == 0)
 //   - every value is a syntactically valid op:// URI
 func Load(path string) (*Allowlist, error) {
@@ -35,6 +37,14 @@ func Load(path string) (*Allowlist, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot stat allowlist file %s: %w", path, err)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		if uid := os.Getuid(); uid >= 0 && stat.Uid != uint32(uid) {
+			return nil, fmt.Errorf(
+				"allowlist file %s is owned by uid %d, not the current user (uid %d)",
+				path, stat.Uid, uid,
+			)
+		}
 	}
 	if info.Mode().Perm()&0o004 != 0 {
 		return nil, fmt.Errorf(

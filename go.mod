@@ -1,3 +1,3 @@
 module github.com/bestdan/opx
 
-go 1.24.13
+go 1.24
