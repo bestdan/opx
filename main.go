@@ -1,7 +1,8 @@
 // opx is a 1Password CLI wrapper that provides per-call biometric authorization.
 // Each invocation:
-//  1. Runs "op read <uri>" — triggering a fresh biometric prompt.
-//  2. On exit (success, failure, or signal), runs "op session forget --all"
+//  1. Shows a confirmation dialog disclosing the requested URI and calling process.
+//  2. Runs "op read <uri>" — triggering a fresh biometric prompt.
+//  3. On exit (success, failure, or signal), runs "op session forget --all"
 //     to invalidate the CLI session token, leaving no residual access.
 //
 // Usage:
@@ -18,7 +19,9 @@ import (
 	"syscall"
 
 	"github.com/bestdan/opx/internal/allowlist"
+	"github.com/bestdan/opx/internal/caller"
 	"github.com/bestdan/opx/internal/oprunner"
+	"github.com/bestdan/opx/internal/prompt"
 )
 
 // Exit codes.
@@ -41,11 +44,11 @@ func main() {
 			os.Exit(exitOpFail)
 		}
 	}()
-	os.Exit(run(os.Args[1:], oprunner.New()))
+	os.Exit(run(os.Args[1:], oprunner.New(), prompt.New()))
 }
 
 // run is the main logic, separated from main() so it is testable.
-func run(args []string, r oprunner.Runner) int {
+func run(args []string, r oprunner.Runner, c prompt.Confirmer) int {
 	if len(args) == 0 {
 		printUsage()
 		return exitUsage
@@ -80,6 +83,16 @@ func run(args []string, r oprunner.Runner) int {
 		return exitUsage
 	}
 
+	return confirmAndRead(uri, r, c)
+}
+
+// confirmAndRead shows the confirmation dialog and, if approved, reads the secret.
+func confirmAndRead(uri string, r oprunner.Runner, c prompt.Confirmer) int {
+	callerName := caller.Name()
+	if err := c.Confirm(uri, callerName); err != nil {
+		fmt.Fprintf(os.Stderr, "opx: %v\n", err)
+		return exitOpFail
+	}
 	return readAndForget(uri, r)
 }
 
