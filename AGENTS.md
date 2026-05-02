@@ -52,7 +52,7 @@ Go 1.24+ is required (see `go.mod`).
   doc comment. Keep that style.
 - **Exported identifiers documented.** Each exported function/type has a
   short comment explaining intent (not just restating the signature).
-- **Errors are wrapped with `%w`** so callers can `errors.Is` /
+- **Errors are wrapped with `%w`** so callers can use `errors.Is` /
   `errors.As`. `prompt.ErrDenied` is the canonical sentinel for user
   denial — return it (or wrap it) rather than inventing parallel errors.
 - **Exit codes are centralized** in `main.go` (`exitSuccess`, `exitOpFail`,
@@ -82,10 +82,10 @@ These properties are the entire point of the project. Touching them needs
 deliberate intent.
 
 1. **Every successful read is preceded by a `Confirmer.Confirm` call.**
-   See `confirmAndRead` in `main.go:94`.
+   See `confirmAndRead` in `main.go`.
 2. **`Runner.ForgetSession` is called on every exit path** — success,
    error, signal, panic. See the `defer` in `main()` and the unconditional
-   call in `readAndForget` (`main.go:115`).
+   call in `readAndForget` in `main.go`.
 3. **Allowlist files must be owned by the current user and not
    world-readable.** Both checks happen before JSON is parsed
    (`internal/allowlist/allowlist.go`).
@@ -105,7 +105,7 @@ explicitly in the PR description rather than burying it in a refactor.
 - Introducing cgo (breaks `make cross`).
 - Caching the `op` session — that is exactly what this tool exists to
   prevent.
-- Editing `.gitignore` to whitelist build artifacts; the repo intentionally
+- Editing `.gitignore` to allowlist build artifacts; the repo intentionally
   ignores all `opx*` binaries and `*.test`.
 
 ## Branching
