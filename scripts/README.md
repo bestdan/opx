@@ -1,15 +1,7 @@
 # scripts/
 
-Local-development scaffolding: fixtures, smoke tests, install helper, and
-git hooks. Adapt to your setup.
-
-## One-time setup per clone
-
-```sh
-make setup-hooks
-```
-
-Points this clone at `scripts/hooks/` so the tracked `pre-push` hook fires.
+Local-development scaffolding: fixtures, smoke tests, install helper.
+Adapt to your setup.
 
 ## Files
 
@@ -51,17 +43,6 @@ line with the lengths of each variable.
 Build, test, lint, and install `opx` into `/usr/local/bin/`. Requires
 `sudo` for the move. Bypasses `make test-integration` — run that
 separately if you want to hit a real vault.
-
-### `hooks/pre-push`
-
-Runs `make test-all` before any `git push`. Aborts the push on test
-failure. Bypass for one push with `git push --no-verify`. Active only
-after `make setup-hooks` (it reconfigures `core.hooksPath` for this
-clone).
-
-Heads-up: because `test-all` includes integration tests, every push will
-trigger biometric prompts. Use `--no-verify` for branches without
-fixtures or rapid WIP iteration.
 
 ## Notes
 
