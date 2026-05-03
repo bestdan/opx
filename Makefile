@@ -4,15 +4,23 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 # Strip debug info and symbol tables for a smaller binary (~2-5 MB target).
 LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
 
-.PHONY: build test clean cross lint
+.PHONY: build test test-integration test-all clean cross lint
 
 ## build: compile opx for the current platform.
 build:
 	go build $(LDFLAGS) -o $(BINARY) .
 
-## test: run all unit tests.
+## test: run unit tests (hermetic; safe for CI).
 test:
 	go test ./...
+
+## test-integration: run integration tests against a real `op` binary.
+##                   Requires scripts/.env.example fixtures and triggers biometric prompts.
+test-integration:
+	go test -tags=integration -count=1 ./internal/oprunner/...
+
+## test-all: run unit + integration tests. Use this locally before pushing.
+test-all: test test-integration
 
 ## lint: run go vet (no external linter required).
 lint:

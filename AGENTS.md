@@ -17,10 +17,12 @@ as cleanup.
 main.go                 # entry point; argument parsing, exit codes, signal & panic handling
 main_test.go            # end-to-end tests of run() with fake Runner/Confirmer
 internal/caller/        # parent process name (ppid → /proc/.../comm or `ps`)
-internal/oprunner/      # `op read` / `op session forget` subprocess wrapper (Runner interface)
+internal/oprunner/      # `op read` / `op signout` subprocess wrapper (Runner interface)
 internal/prompt/        # platform-native confirm dialog (osascript / zenity / /dev/tty)
+internal/shellquote/    # POSIX single-quote escaper for --env output
 internal/uri/           # `op://vault/item/field` syntax validator
-Makefile                # build, test, lint, clean, cross
+scripts/                # local-dev scaffolding: fixtures, smoke test, install helper
+Makefile                # build, test, test-integration, test-all, lint, clean, cross
 ```
 
 All packages are under `internal/` and importable only from this module.
@@ -29,16 +31,20 @@ Add new packages there unless there is a clear reason to expose them.
 ## Build, test, lint
 
 ```sh
-make build        # compile ./opx for the current platform
-make test         # go test ./...
-make lint         # go vet ./...
-make cross        # CGO_ENABLED=0 builds for darwin-arm64, darwin-amd64, linux-amd64
+make build             # compile ./opx for the current platform
+make test              # unit tests (hermetic; what CI runs)
+make test-integration  # local-only: hits real op binary, requires scripts/.env.example
+make test-all          # test + test-integration
+make lint              # go vet ./...
+make cross             # CGO_ENABLED=0 builds for darwin-arm64, darwin-amd64, linux-amd64
 make clean
 ```
 
 Run `make test` and `make lint` before reporting work as complete. If you
 touch the cross-compile flow, run `make cross` too — it must stay
-CGO-free.
+CGO-free. `make test-integration` is fixture-dependent and triggers
+biometric prompts, so it is not required for every change — run it when
+touching `internal/oprunner` or anything else at the `op` boundary.
 
 Go 1.24+ is required (see `go.mod`).
 
@@ -78,14 +84,23 @@ These properties are the entire point of the project. Touching them needs
 deliberate intent.
 
 1. **Every successful read is preceded by a `Confirmer.Confirm` call.**
-   See `confirmAndRead` in `main.go`.
+   See `confirmAndRead` in `main.go`. In `--env` batch mode a single
+   Confirm covers every URI in the request; the dialog must show all of
+   them so the user can review the full set before approving.
 2. **`Runner.ForgetSession` is called on every exit path** — success,
    error, signal, panic. See the `defer` in `main()` and the unconditional
-   call in `readAndForget` in `main.go`.
+   call in `readAndForget` in `main.go`. Batch mode does not change this:
+   one Forget per invocation, regardless of N.
 3. **`op://` URIs are validated before being passed to `op`.** All args
-   run through `uri.IsOPURI` before the read.
+   run through `uri.IsOPURI` before the read. Validation happens before
+   `Confirm`, so a malformed URI fails as a usage error without prompting.
 4. **Secrets only ever go to `os.Stdout`.** Don't log them, don't include
-   them in error messages, don't write them to temp files.
+   them in error messages, don't write them to temp files. In `--env`
+   mode they are shell-quoted via `internal/shellquote` before stdout,
+   but they still only leave the process via stdout.
+5. **Batch reads are atomic.** If any read in a `--env` batch fails,
+   nothing goes to stdout. Half-populated environments are a footgun,
+   not a feature.
 
 If a change appears to remove or weaken any of these, call it out
 explicitly in the PR description rather than burying it in a refactor.
@@ -93,12 +108,17 @@ explicitly in the PR description rather than burying it in a refactor.
 ## Things to avoid
 
 - Adding flags or features beyond what the task asks for. The CLI is
-  deliberately tiny: one mode, three exit codes.
+  deliberately small: two input modes (single positional URI and
+  repeatable `--env NAME=op://...` pairs), three exit codes.
 - Adding nicknames, allowlists, config files, or any other indirection
   between the user-typed `op://` URI and the read. `opx` was scoped down
   to a pure security boundary around `op`; convenience layers were
   considered and explicitly rejected because they don't add safety and
-  the dialog is the trust boundary.
+  the dialog is the trust boundary. `--env` is *not* an exception: the
+  user still types every URI on the command line; it only batches the
+  approval, it does not store or alias anything.
+- Adding a non-strict / "skip signout" mode. The forced session
+  invalidation is the entire reason this tool exists.
 - Adding logging frameworks, config loaders, or CLI parsing libraries.
 - Introducing cgo (breaks `make cross`).
 - Caching the `op` session — that is exactly what this tool exists to

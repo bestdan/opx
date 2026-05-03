@@ -15,8 +15,8 @@ type Runner interface {
 	// ReadSecret runs "op read <uri>" and returns the secret value.
 	// The context may be cancelled to abort the operation.
 	ReadSecret(ctx context.Context, uri string) ([]byte, error)
-	// ForgetSession runs "op session forget --all" to invalidate any cached
-	// session token.  The caller should always invoke this, even after errors.
+	// ForgetSession runs "op signout --all" to invalidate any cached session
+	// token.  The caller should always invoke this, even after errors.
 	ForgetSession() error
 }
 
@@ -48,5 +48,8 @@ func (r *realRunner) ReadSecret(ctx context.Context, uri string) ([]byte, error)
 }
 
 func (r *realRunner) ForgetSession() error {
-	return exec.Command("op", "session", "forget", "--all").Run()
+	cmd := exec.Command("op", "signout", "--all")
+	cmd.Stderr = r.opStderr
+	cmd.Stdout = io.Discard
+	return cmd.Run()
 }
