@@ -107,6 +107,9 @@ export GITHUB_TOKEN="$(opx op://Personal/GitHub/token)"
 | 1    | `op` failed, user denied the prompt, or interrupted |
 | 2    | Usage error (no args, malformed URI)                |
 
+All non-usage failures collapse to exit 1 by design: callers should treat
+them identically (no secret on stdout) and read `stderr` for the reason.
+
 ## Common gotchas
 
 - **`op` not on `PATH`.** `opx` shells out to `op`; if it isn't installed
