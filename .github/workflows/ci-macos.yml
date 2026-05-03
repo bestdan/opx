@@ -1,0 +1,49 @@
+name: CI (macOS)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/prompt/**'
+      - 'internal/caller/**'
+      - 'main.go'
+      - 'main_test.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/ci-macos.yml'
+  pull_request:
+    paths:
+      - 'internal/prompt/**'
+      - 'internal/caller/**'
+      - 'main.go'
+      - 'main_test.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/ci-macos.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: make lint
+
+      - name: go test
+        run: make test
+
+      - name: go build
+        run: make build
