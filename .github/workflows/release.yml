@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build and publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: make lint
+
+      - name: go test
+        run: make test
+
+      - name: cross-compile
+        run: make cross
+
+      - name: checksums
+        run: shasum -a 256 opx-darwin-arm64 opx-darwin-amd64 opx-linux-amd64 > SHA256SUMS
+
+      - name: create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag \
+            opx-darwin-arm64 \
+            opx-darwin-amd64 \
+            opx-linux-amd64 \
+            SHA256SUMS
