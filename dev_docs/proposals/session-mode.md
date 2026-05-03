@@ -207,7 +207,13 @@ addresses each direction:
 - **Direct file tampering** (an attacker overwriting `profiles.enc`)
   is detected at decryption time by AES-GCM's authentication tag.
   An opx that fails to authenticate refuses to use the file and
-  exits with a clear error. No prompt is shown.
+  exits with a clear error. **No opx confirm dialog is shown**, but
+  the user will already have seen the biometric prompt for the
+  encryption-key fetch — that prompt is unavoidable in the
+  activation flow because the key is needed before tampering can
+  even be detected. The activation orchestrator must call
+  `op signout --all` on this error path so the `op` session opened
+  by the key fetch does not linger.
 - **Swapping the key path** in `config.json` is a denial-of-service
   but not a privilege escalation: pointing at an attacker-controlled
   1Password item produces a different decryption key, AES-GCM auth
@@ -222,20 +228,35 @@ is no more sensitive than anything else in the user's shell history.
 An earlier design sketch had `opx session` stay alive as a parent
 process serving a Unix socket. Children would invoke `opx <uri>`,
 which would detect `OPX_SESSION_SOCK` and fetch over the socket.
-This was discarded in favor of the env-var model:
+This was discarded in favor of the env-var model, but the threat
+models are **not** identical and the trade-off should be acknowledged
+honestly:
 
-- The threat model is essentially identical. In both designs, any
-  process descending from the activated shell can read every
-  granted secret. The user accepted that scope by typing
+- **Both** designs let any descendant of the activated shell read
+  every granted secret. The user accepted that scope by typing
   `opx session work -- bash`.
+- **Env vars are additionally readable by same-user sibling processes
+  via `/proc/<pid>/environ` on Linux and `KERN_PROCARGS2` on
+  macOS.** A malicious process running as the user, but outside the
+  session shell's process tree, can read the activated shell's
+  environment and recover the secrets. The socket design did not
+  expose secrets this way: the secrets lived in the parent
+  process's heap, served on demand, and `/proc/<pid>/environ` of
+  any process in the tree would not contain them.
+- This is **not a regression** versus the existing `--env` flow,
+  which is universally used as `eval "$(opx --env …)"` and so has
+  always put the secrets in the user's shell environment — same
+  exposure, same threat. Session mode preserves that property; it
+  does not strengthen it.
 - The env-var model has no daemon, no socket, no peer-uid checks,
-  no zero-on-signal lifecycle, no socket-cleanup logic.
-- It reuses the existing `--env` rendering path almost verbatim.
+  no zero-on-signal lifecycle, no socket-cleanup logic, and
+  reuses the existing `--env` rendering path almost verbatim.
 - It loses the ability to "add a URI to the running session" — see
   Non-goals. That is a deliberate v1 trade-off.
 
-If a real need for in-session adds appears later, the socket model
-can be layered on as v2 without changing the storage format.
+If a real need for stronger same-user-sibling resistance appears
+later (or for in-session adds), the socket model can be layered on
+as v2 without changing the storage format.
 
 ## Security analysis
 
@@ -245,9 +266,12 @@ The protections session mode preserves:
 
 1. A user who has not approved an activation cannot get profile
    secrets into their shell. Activation is biometric-gated.
-2. An attacker with file access to `~/.config/opx/` cannot read
-   the URI list (file is encrypted, key in 1Password) and cannot
-   silently inject grants (writes also require the key).
+2. An attacker with **passive file access** to `~/.config/opx/`
+   (backup tape, cold disk image, SSH-as-different-user with read
+   access to the file) cannot read the URI list — the file is
+   AES-GCM encrypted with a key that lives only in 1Password. The
+   attacker also cannot silently inject grants; tampering trips
+   the auth tag at next activation.
 3. After activation, `op signout --all` runs, so no `op` session
    token persists. The cached secrets live only as env vars in the
    user's chosen process tree.
@@ -256,6 +280,25 @@ The protections session mode preserves:
 
 The protections session mode does *not* provide:
 
+- **URI confidentiality from a same-user attacker who can invoke
+  `opx`.** Encryption protects against passive disk inspection
+  (above), but a process running as the user can run
+  `opx session show <name>` or `opx session work -- :` and rely on
+  the user to authenticate the resulting biometric prompt; once
+  authenticated, opx decrypts the file in-process and the URI list
+  is in opx's memory. The opx confirm dialog comes *after* this
+  decryption, so the dialog is not the gate on URI reads — the
+  biometric is. This is a real downgrade from the original
+  ask ("uris not readable without going through the opx approval
+  process"). The mitigation is that opx never writes the URI list
+  to disk, never logs it, and panics scrub the URI list from
+  buffers before re-raising. Treat encryption as protecting against
+  *file-level exfil*, not against on-host adversaries.
+- **Same-user sibling exposure of activated env vars.** See "Why
+  env vars instead of a Unix socket" — `/proc/<pid>/environ` and
+  `KERN_PROCARGS2` make the activated shell's secrets readable to
+  same-user siblings, matching `eval "$(opx --env …)"` parity but
+  weaker than the discarded socket design.
 - Inside an active shell, any descendant process can read the
   granted env vars. This is the explicit cost the user is paying for
   the friction reduction; it is the same property as
@@ -277,11 +320,17 @@ The current AGENTS.md states:
 This needs reformulation, because the goal is one Confirm covering
 many reads at activation. Proposed wording:
 
-> 1. Every secret value leaving the process is preceded by an
->    explicit, scope-disclosing approval. In single-shot mode the
->    approval is per read. In `--env` and session-activation modes
->    the approval is per invocation and the dialog discloses every
->    URI in the batch before any read happens.
+> 1. Every *profile-secret* value leaving the process is preceded
+>    by an explicit, scope-disclosing opx confirm dialog that lists
+>    every URI in the batch. In single-shot mode the dialog
+>    precedes the `op read`. In `--env` mode the same property
+>    holds. In session-activation mode the dialog precedes the
+>    profile-URI batch read, but the *encryption-key* `op read` is
+>    necessarily issued before the dialog so the dialog has URIs to
+>    list. The encryption-key URI is plaintext in `config.json` and
+>    therefore not a surprise to the user; the activation
+>    orchestrator must call `op signout --all` on every exit path
+>    after the key fetch, including denial.
 > 2. `Runner.ForgetSession` is called on every exit path of every
 >    invocation that ran any `op read`. (Unchanged.)
 > 3. `op://` URIs are validated before being passed to `op`.
@@ -350,10 +399,18 @@ New packages:
 Changes to existing packages:
 
 - **`main.go`** — new subcommand dispatch in the arg parser.
-  Activation reuses `confirmAndRead` so the existing
-  one-prompt-covers-all-bindings behavior is inherited automatically.
-  The exec-with-env step is a new helper but is shorter than the
-  current `--env` rendering path.
+  Activation needs its own orchestrator (call it
+  `confirmAndActivate`), not a reuse of `confirmAndRead`, because
+  the existing helper expects to dialog-then-read-then-signout in
+  that order. Session activation is forced into key-read first
+  (for decryption), then dialog, then batch read, then signout —
+  and critically, **must signout on the deny path too**, since the
+  key fetch already opened an `op` session by the time the user
+  sees the dialog. `confirmAndActivate` wraps the read+signout
+  pair so the `defer r.ForgetSession()` covers every exit path
+  (key fetched, dialog denied, integrity error, batch read failed,
+  exec succeeded). The exec-with-env step is a new helper but is
+  shorter than the current `--env` rendering path.
 - **`internal/oprunner/`** — optionally add a `WriteItem` method on
   the `Runner` interface for `opx session init`. If we want to keep
   the `Runner` minimal, bootstrap can ask the user to create the
@@ -377,10 +434,25 @@ authentication source.
   asserts one prompt at activation, env vars resolve correctly in
   the child, no `op` session lingers, no temp file remains on shell
   exit.
-- Adversarial manual checks: byte-flip `profiles.enc` → integrity
-  error before any prompt; swap `config.json` `profileKey` →
-  decryption fails; from a sibling shell with no inherited env, the
-  granted secrets are not present.
+- Adversarial manual checks:
+  - Byte-flip `profiles.enc` → AES-GCM auth failure. Note: the user
+    will still have seen the encryption-key biometric prompt
+    *before* the integrity error surfaces (the key is needed to
+    detect tampering at all). The adversarial check is "no opx
+    confirm dialog, no profile secrets read, `op signout --all`
+    runs," not "no biometric at all."
+  - Swap `config.json`'s `profileKey` to attacker-controlled URI →
+    decryption fails (different key); same opx-side behavior as
+    the byte-flip case.
+  - From a sibling shell *with no inherited env*, granted secrets
+    are not present in that shell's own environment.
+  - **From a same-user sibling process inspecting the activated
+    shell's environment** (Linux: `cat /proc/$ACTIVATED_PID/environ`;
+    macOS: `ps -E -p $ACTIVATED_PID`), the granted secrets ARE
+    present. This is the documented exposure of the env-var model
+    and matches `eval "$(opx --env …)"` parity. The check exists
+    not as a "must fail" but as a regression detector against the
+    socket-model property we are explicitly *not* providing.
 
 ## Open questions
 
