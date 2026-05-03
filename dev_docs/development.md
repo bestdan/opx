@@ -17,15 +17,19 @@ single source of truth and applies to humans and AI agents alike.
 ## Make targets
 
 ```sh
-make build              # compile ./opx for the current platform
-make test               # go test ./...
-make lint               # go vet ./...
-make cross              # CGO_ENABLED=0 builds for darwin-arm64, darwin-amd64, linux-amd64
+make build             # compile ./opx for the current platform
+make test              # unit tests (hermetic; what CI runs)
+make test-integration  # local-only: hits real op binary, requires scripts/.env.example
+make test-all          # test + test-integration
+make lint              # go vet ./...
+make cross             # CGO_ENABLED=0 builds for darwin-arm64, darwin-amd64, linux-amd64
 make clean
 ```
 
 Run `make test` and `make lint` before opening a PR. If you touch the
 cross-compile flow, run `make cross` too — it must stay CGO-free.
+`make test-integration` is local-only (fixtures + biometric prompts);
+run it when touching `internal/oprunner` or the `op` binary boundary.
 
 ## Repository layout
 
@@ -37,7 +41,8 @@ internal/oprunner/      # `op read` / `op signout` subprocess wrapper (Runner in
 internal/prompt/        # platform-native confirm dialog (osascript / zenity / /dev/tty)
 internal/shellquote/    # POSIX single-quote escaper for --env output
 internal/uri/           # `op://vault/item/field` syntax validator
-Makefile                # build, test, lint, clean, cross
+scripts/                # local-dev scaffolding: fixtures, smoke test, install helper
+Makefile                # build, test, test-integration, test-all, lint, clean, cross
 ```
 
 All packages are under `internal/` and importable only from this module.

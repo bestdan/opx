@@ -15,7 +15,7 @@ test:
 	go test ./...
 
 ## test-integration: run integration tests against a real `op` binary.
-##                   Requires scripts/.env.test fixtures and triggers biometric prompts.
+##                   Requires scripts/.env.example fixtures and triggers biometric prompts.
 test-integration:
 	go test -tags=integration -count=1 ./internal/oprunner/...
 
