@@ -5,12 +5,17 @@ Status: draft, not yet implemented.
 ## Summary
 
 Add a `opx session` subcommand that activates a named, persistent
-profile of `op://` URIs into a child shell as environment variables,
-gated by one biometric approval covering the whole batch. Profiles
-live in an encrypted file on disk; the encryption key is itself a
-1Password item, so reading or editing the profile store also costs
-one biometric. Single-shot `opx <uri>` and `opx --env …` are
-unchanged when no session is active; this is purely additive.
+profile of `op://` URIs into a child shell as environment variables.
+Activation is gated by a biometric prompt to fetch the profile-store
+encryption key, then a scope-disclosing opx confirm dialog listing
+every URI in the profile, then a batched `op read` of those URIs
+that typically reuses `op`'s post-biometric session cache (so the
+user sees one biometric and one dialog in the common case).
+Profiles live in an encrypted file on disk; the encryption key is
+itself a 1Password item, so reading or editing the profile store
+also costs one biometric. Single-shot `opx <uri>` and
+`opx --env …` are unchanged when no session is active; this is
+purely additive.
 
 The motivating problem is friction. `opx` was deliberately scoped so
 that every secret read costs a biometric prompt, which is the entire
@@ -30,9 +35,10 @@ the secrets, behind a biometric-gated store.
 
 - Reduce prompt count from "per read" to "per shell" for workflows
   that always need the same URIs.
-- Preserve the existing security property at the activation boundary:
-  one explicit, scope-disclosing biometric approval that lists every
-  URI before any secret leaves the process.
+- Preserve the existing security property at the activation
+  boundary: an explicit, scope-disclosing approval (the opx
+  confirm dialog) that lists every profile URI, gated by a
+  biometric, before any *profile* secret leaves the process.
 - Keep secrets off disk. Profiles persist; secret values do not.
 - Make reading or editing the profile store itself require biometric
   approval, so an attacker with file access cannot silently widen
@@ -122,26 +128,38 @@ opx session work -- bash
 Flow:
 
 1. Read `config.json` and `profiles.enc`.
-2. Build a single `Confirmer.Request` whose `Bindings` cover the
-   profile-store encryption key plus every URI in the requested
-   profile. Show ONE dialog, list every URI plainly, get one
-   approval.
-3. On approve: fetch the encryption key via `op read`, decrypt
-   `profiles.enc`, then fetch every profile URI via `op read`. All
-   of these reads happen inside the consolidated approval window.
-4. Run `op signout --all`. (This matches the current single-shot
-   and `--env` behavior; the session activation is a one-shot
-   read batch from `op`'s point of view.)
-5. Set the named environment variables in a child environment and
+2. Fetch the encryption key via `op read` against the URI named in
+   `config.json`. This is the first biometric of the activation. It
+   is *unavoidable* before the dialog, because step 3 needs the key
+   and step 4's dialog needs the decrypted URI list.
+3. Decrypt `profiles.enc` and parse the requested profile.
+4. Build a `Confirmer.Request` whose `Bindings` are every URI in
+   the profile, with their target env-var names. Show one dialog
+   listing every URI plainly. Get one approval.
+5. On approve, fetch every profile URI via `op read`. These reads
+   reuse the `op` session cached by step 2, so they typically do
+   not re-prompt for biometrics. (If the cache has already expired
+   between steps 2 and 5, the user may see a second prompt.)
+6. Run `op signout --all`. The session activation is a single-shot
+   read batch from `op`'s point of view, matching the existing
+   single-shot and `--env` behavior.
+7. Set the named environment variables in a child environment and
    `exec` the requested command (`bash` in the example), inheriting
    the user's other env unchanged.
-6. The child shell, and any descendants, see the env vars. When the
+8. The child shell, and any descendants, see the env vars. When the
    shell exits, the env vars die with the process tree. There is no
    socket, no daemon, nothing to tear down.
 
-The activation's biometric prompt lists every URI, so the user is
-reviewing the full grant set every time. This is the same property
-`--env` provides today.
+User-visible cost in the typical case: **one biometric prompt
+(driven by step 2's key fetch), one opx confirm dialog (step 4),
+done.** The dialog still discloses every URI before any *profile*
+secret is read; the only thing fetched before the dialog is the
+encryption key itself, whose `op://` path is shown in `config.json`
+and is therefore not a surprise to the user.
+
+This is a meaningful order change from the existing single-shot /
+`--env` flow, where the dialog precedes the biometric. Worth
+documenting in the user-facing docs.
 
 ### Bootstrap
 
@@ -149,13 +167,21 @@ reviewing the full grant set every time. This is the same property
 
 1. Prompt the user for the `op://` path where the profile-store key
    will live (default suggestion: `op://Personal/opx/profiles-key`).
-2. Generate a 32-byte random key with `crypto/rand`.
-3. Write the key to that path via `op item create` (or, if the
-   `Runner` extension is deemed too invasive, prompt the user to
-   create the item by hand and paste the path back). One biometric.
+2. Generate a 32-byte random key with `crypto/rand` and base64-encode
+   it (1Password text fields are not binary-safe — raw random bytes
+   may contain null terminators or invalid UTF-8 that gets mangled
+   on round-trip).
+3. Write the encoded key to that path via `op item create` (or, if
+   the `Runner` extension is deemed too invasive, prompt the user
+   to create the item by hand and paste the path back). One
+   biometric.
 4. Write `~/.config/opx/config.json` with the path.
 5. Initialize `~/.config/opx/profiles.enc` as an encrypted empty
    profile set.
+
+Read paths decode the base64 before using the key. A garbled or
+non-base64 value at the configured path is a fatal error with a
+clear message ("expected base64 32-byte key").
 
 Subsequent runs read `config.json`, fetch the key, and operate on
 `profiles.enc`.
@@ -172,7 +198,12 @@ addresses each direction:
 - **Writing** the profile store (e.g. `opx session edit work`,
   `opx session add work …`, `opx session rm work …`) requires
   fetching the key, which requires a biometric. After the edit, opx
-  re-encrypts and writes atomically.
+  re-encrypts and writes atomically: the temp file is created with
+  `0600` from the start (via `os.OpenFile` with explicit mode, not
+  `os.CreateTemp` followed by `chmod` — the brief window between
+  create and chmod is a real exposure), placed in the same
+  directory as `profiles.enc` so the rename is atomic on the same
+  filesystem, and `fsync`'d before the rename.
 - **Direct file tampering** (an attacker overwriting `profiles.enc`)
   is detected at decryption time by AES-GCM's authentication tag.
   An opx that fails to authenticate refuses to use the file and
@@ -366,9 +397,17 @@ authentication source.
   `XDG_CONFIG_HOME` honored, since macOS users running CLIs
   generally expect XDG.
 - **Should `opx session edit` decrypt to a temp file for `$EDITOR`,
-  or read+write through stdin/stdout?** The temp-file path needs
-  careful handling (memfd on Linux, secure cleanup on macOS) to
-  avoid leaving plaintext on disk. The stdin/stdout path is safer
-  but breaks normal editor UX. Suggest temp-file with `memfd_create`
-  on Linux and a `0600` file under `$TMPDIR` on macOS, deleted
-  immediately after the editor exits.
+  or read+write through stdin/stdout?** The stdin/stdout path is
+  safer but breaks normal editor UX (no syntax highlighting against
+  a real path, no swap files for crash recovery). The temp-file
+  path needs careful handling to avoid leaving plaintext on disk.
+  An earlier draft suggested `memfd_create` on Linux, but most
+  editors (vim, emacs) try to create swap/lock files in the same
+  directory as the file being edited, and a `memfd` has no
+  directory entry, so this would break common editors. Revised
+  suggestion: a `0600` file inside a freshly-created `0700`
+  subdirectory under `$TMPDIR` (or `/dev/shm` if available on
+  Linux, to keep the plaintext off persistent storage), removed
+  with `os.Remove` and the parent `os.RemoveAll` immediately after
+  the editor exits. The subdirectory wrapper means swap/lock
+  siblings the editor creates also get cleaned up.
