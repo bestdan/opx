@@ -99,6 +99,31 @@ warnings) goes to stderr, so you can pipe the secret directly:
 export GITHUB_TOKEN="$(opx op://Personal/GitHub/token)"
 ```
 
+### Loading multiple secrets at once
+
+Calling `opx` once per secret means one biometric prompt per secret. To
+load several secrets under a single approval, use `--env NAME=op://...`
+pairs and `eval` the output:
+
+```sh
+eval "$(opx \
+    --env GITHUB_TOKEN=op://Personal/GitHub/token \
+    --env AWS_KEY=op://Personal/AWS/access_key \
+    --env AWS_SECRET=op://Personal/AWS/secret_key)"
+```
+
+The dialog lists every URI and the variable each one will be bound to,
+so you can review the whole batch before approving. Output is atomic:
+if any read fails, nothing is written to stdout and the exit code is 1
+— so you never end up with a partially populated environment. The
+`op` session is forgotten once at the end, exactly as in single-URI
+mode.
+
+This trades a finer trust boundary (one approval per URI) for fewer
+interruptions (one approval per batch). The user still types every URI
+and every variable name themselves, so a malicious caller can't sneak
+extra reads in.
+
 ### Exit codes
 
 | Code | Meaning                                             |

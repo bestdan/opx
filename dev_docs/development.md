@@ -35,6 +35,7 @@ main_test.go            # end-to-end tests of run() with fake Runner/Confirmer
 internal/caller/        # parent process name (ppid → /proc/.../comm or `ps`)
 internal/oprunner/      # `op read` / `op session forget` subprocess wrapper (Runner interface)
 internal/prompt/        # platform-native confirm dialog (osascript / zenity / /dev/tty)
+internal/shellquote/    # POSIX single-quote escaper for --env output
 internal/uri/           # `op://vault/item/field` syntax validator
 Makefile                # build, test, lint, clean, cross
 ```
