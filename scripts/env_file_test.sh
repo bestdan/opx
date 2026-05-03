@@ -11,5 +11,3 @@ args=()
 
   eval "$(opx "${args[@]}")"
   echo "CREDS=${#CREDS} KEYS=${#KEYS}"
-
-  echo "$CREDS" | head -c 4; echo

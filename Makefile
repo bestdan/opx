@@ -4,7 +4,10 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 # Strip debug info and symbol tables for a smaller binary (~2-5 MB target).
 LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
 
-.PHONY: build test test-integration test-all clean cross lint
+.PHONY: build test test-integration test-all clean cross lint icon
+
+ICON_SRC := internal/prompt/assets/build/draw_icon.py
+ICON_OUT := internal/prompt/assets/opx.icns
 
 ## build: compile opx for the current platform.
 build:
@@ -25,6 +28,11 @@ test-all: test test-integration
 ## lint: run go vet (no external linter required).
 lint:
 	go vet ./...
+
+## icon: regenerate the embedded icon (white-on-transparent PNG; Go recolors
+##       it at runtime). Requires Pillow (`pip install pillow`).
+icon:
+	python3 internal/prompt/assets/build/draw_icon.py internal/prompt/assets/opx.png
 
 ## clean: remove compiled binaries.
 clean:

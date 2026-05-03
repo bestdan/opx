@@ -179,21 +179,22 @@ func TestRun_ForgetCalledOnReadError(t *testing.T) {
 
 func TestRun_ForgetWarningOnForgetError(t *testing.T) {
 	// Forget fails but run should still succeed overall (i.e. not crash).
+	// The warning is verbose-only output, so we point diag at our pipe for
+	// the duration of the test and restore it afterwards.
 	fr := &fakeRunner{
 		secret:    []byte("value"),
 		forgetErr: errors.New("session forget failed"),
 	}
-	// Capture stderr to verify the warning is printed.
-	old := os.Stderr
 	r, w, _ := os.Pipe()
-	os.Stderr = w
+	prevDiag := diag
+	diag = w
+	t.Cleanup(func() { diag = prevDiag })
 
 	code := captureStdoutCode(t, func() int {
 		return run([]string{"op://V/I/f"}, fr, allow())
 	})
 
 	w.Close()
-	os.Stderr = old
 
 	var sb strings.Builder
 	buf := make([]byte, 4096)
@@ -219,11 +220,12 @@ func captureStdoutCode(t *testing.T, fn func() int) int {
 
 func TestRun_ConfirmDeny_NoOpRead(t *testing.T) {
 	// When the user denies the dialog, op should never be called and the exit
-	// code must be exitOpFail.
+	// code must be exitDenied (distinct from exitOpFail so callers can
+	// branch on user intent vs. tool failure even when stderr is silent).
 	fr := &fakeRunner{secret: []byte("should-not-be-returned")}
 	code := run([]string{"op://V/I/f"}, fr, deny())
-	if code != exitOpFail {
-		t.Errorf("got exit code %d, want %d after deny", code, exitOpFail)
+	if code != exitDenied {
+		t.Errorf("got exit code %d, want %d after deny", code, exitDenied)
 	}
 	if len(fr.readCalls) != 0 {
 		t.Errorf("ReadSecret called %d times after deny; want 0", len(fr.readCalls))
@@ -322,8 +324,8 @@ func TestRun_EnvDeniedNoReads(t *testing.T) {
 		"--env", "A=op://V/A/f",
 		"--env", "B=op://V/B/f",
 	}, fr, deny())
-	if code != exitOpFail {
-		t.Errorf("exit code = %d, want %d", code, exitOpFail)
+	if code != exitDenied {
+		t.Errorf("exit code = %d, want %d", code, exitDenied)
 	}
 	if len(fr.readCalls) != 0 {
 		t.Errorf("ReadSecret called %d times after deny; want 0", len(fr.readCalls))
@@ -439,5 +441,101 @@ func TestRun_EnvEqualsForm(t *testing.T) {
 	})
 	if out != "export FOO='v';\n" {
 		t.Errorf("stdout = %q, want export FOO='v';\\n", out)
+	}
+}
+
+func TestExtractVerbose(t *testing.T) {
+	t.Setenv("OPX_VERBOSE", "")
+	cases := []struct {
+		name    string
+		args    []string
+		env     string
+		wantV   bool
+		wantArg []string
+	}{
+		{"no flag", []string{"op://V/I/f"}, "", false, []string{"op://V/I/f"}},
+		{"long flag", []string{"--verbose", "op://V/I/f"}, "", true, []string{"op://V/I/f"}},
+		{"short flag", []string{"-v", "op://V/I/f"}, "", true, []string{"op://V/I/f"}},
+		{"flag interleaved", []string{"--env", "A=op://V/A/f", "--verbose", "--env", "B=op://V/B/f"}, "",
+			true, []string{"--env", "A=op://V/A/f", "--env", "B=op://V/B/f"}},
+		{"env var on", []string{"op://V/I/f"}, "1", true, []string{"op://V/I/f"}},
+		{"env var zero", []string{"op://V/I/f"}, "0", false, []string{"op://V/I/f"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("OPX_VERBOSE", tc.env)
+			gotV, gotArgs := extractVerbose(tc.args)
+			if gotV != tc.wantV {
+				t.Errorf("verbose = %v, want %v", gotV, tc.wantV)
+			}
+			if strings.Join(gotArgs, "|") != strings.Join(tc.wantArg, "|") {
+				t.Errorf("args = %v, want %v", gotArgs, tc.wantArg)
+			}
+		})
+	}
+}
+
+func TestRun_VerboseFlag_StrippedThenSucceeds(t *testing.T) {
+	// extractVerbose runs in main() before run(); this test mirrors that
+	// pipeline and confirms the flag doesn't leak into parseArgs.
+	t.Setenv("OPX_VERBOSE", "")
+	fr := &fakeRunner{secret: []byte("s")}
+	verbose, args := extractVerbose([]string{"--verbose", "op://V/I/f"})
+	if !verbose {
+		t.Fatal("extractVerbose did not detect --verbose")
+	}
+	out := captureStdout(t, func() {
+		code := run(args, fr, allow())
+		if code != exitSuccess {
+			t.Errorf("exit code = %d, want %d", code, exitSuccess)
+		}
+	})
+	if out != "s" {
+		t.Errorf("stdout = %q, want %q", out, "s")
+	}
+}
+
+func TestSuccessSummary(t *testing.T) {
+	// Single mode: caller and URI.
+	got := successSummary([]prompt.Binding{{URI: "op://V/I/f"}}, false)
+	if !strings.Contains(got, "op://V/I/f") {
+		t.Errorf("single-mode summary missing URI: %q", got)
+	}
+	// Env mode: count + bound names.
+	got = successSummary([]prompt.Binding{
+		{Name: "A", URI: "op://V/A/f"},
+		{Name: "B", URI: "op://V/B/f"},
+	}, true)
+	if !strings.Contains(got, "2 secrets") {
+		t.Errorf("env summary missing count: %q", got)
+	}
+	if !strings.Contains(got, "$A") || !strings.Contains(got, "$B") {
+		t.Errorf("env summary missing var names: %q", got)
+	}
+	// Singular phrasing for one binding in env mode.
+	got = successSummary([]prompt.Binding{{Name: "A", URI: "op://V/A/f"}}, true)
+	if !strings.Contains(got, "1 secret") || strings.Contains(got, "1 secrets") {
+		t.Errorf("singular phrasing wrong: %q", got)
+	}
+}
+
+func TestWantVersion(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"none", []string{"op://V/I/f"}, false},
+		{"long", []string{"--version"}, true},
+		{"short", []string{"-V"}, true},
+		{"with other flags", []string{"--verbose", "--version"}, true},
+		{"lowercase v is verbose, not version", []string{"-v"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wantVersion(tc.args); got != tc.want {
+				t.Errorf("wantVersion(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
 	}
 }
