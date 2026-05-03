@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseVersion(t *testing.T) {
@@ -101,7 +105,9 @@ func TestCompareToRelease(t *testing.T) {
 		{parseVersion("v0.1.0-3-gabcdef"), "v0.1.0", "dev build past"},
 		{parseVersion("v0.1.0"), "v0.2.0", "behind"},
 		{parseVersion("v0.3.0"), "v0.2.0", "newer than the published release"},
-		{parseVersion("b6a3299"), "v0.1.0", "pre-release dev build"},
+		{parseVersion("b6a3299"), "v0.1.0", "no tag metadata"},
+		{parseVersion("v0.1.0-dirty"), "v0.1.0", "uncommitted changes"},
+		{parseVersion("v0.1.0-2-gabcdef-dirty"), "v0.1.0", "past the latest release"},
 	}
 	for _, tc := range cases {
 		got := compareToRelease(tc.v, tc.latest)
@@ -111,14 +117,111 @@ func TestCompareToRelease(t *testing.T) {
 	}
 }
 
+func TestFetchLatestReleaseTag(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		wantTag string
+		wantErr string // substring; "" means no error
+	}{
+		{"ok", http.StatusOK, `{"tag_name":"v1.2.3"}`, "v1.2.3", ""},
+		{"empty tag", http.StatusOK, `{"tag_name":""}`, "", "missing tag_name"},
+		{"not found", http.StatusNotFound, ``, "", "no releases"},
+		{"server error", http.StatusInternalServerError, ``, "", "GitHub API returned"},
+		{"bad json", http.StatusOK, `{not json`, "", ""}, // json error message varies
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got, want := r.URL.Path, "/repos/o/r/releases/latest"; got != want {
+					t.Errorf("path = %q, want %q", got, want)
+				}
+				w.WriteHeader(tc.status)
+				w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			orig := githubAPIBase
+			githubAPIBase = srv.URL
+			defer func() { githubAPIBase = orig }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			tag, err := fetchLatestReleaseTag(ctx, "o", "r")
+			if tag != tc.wantTag {
+				t.Errorf("tag = %q, want %q", tag, tc.wantTag)
+			}
+			if tc.wantErr == "" && tc.name != "bad json" && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Errorf("err = %v, want substring %q", err, tc.wantErr)
+			}
+			if tc.name == "bad json" && err == nil {
+				t.Error("expected json decode error, got nil")
+			}
+		})
+	}
+}
+
+func TestPrintVersion_CheckSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"tag_name":"v0.2.0"}`))
+	}))
+	defer srv.Close()
+	orig := githubAPIBase
+	githubAPIBase = srv.URL
+	defer func() { githubAPIBase = orig }()
+
+	var out, errOut bytes.Buffer
+	printVersion(&out, &errOut, parseVersion("v0.1.0"), true)
+	if !strings.Contains(out.String(), "latest release: v0.2.0") {
+		t.Errorf("stdout missing latest line: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "behind") {
+		t.Errorf("stdout missing comparison: %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("errOut should be empty on success: %q", errOut.String())
+	}
+}
+
+func TestPrintVersion_CheckFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	orig := githubAPIBase
+	githubAPIBase = srv.URL
+	defer func() { githubAPIBase = orig }()
+
+	var out, errOut bytes.Buffer
+	printVersion(&out, &errOut, parseVersion("v0.1.0"), true)
+	// Local label still goes to stdout.
+	if !strings.Contains(out.String(), "v0.1.0") {
+		t.Errorf("stdout missing local label: %q", out.String())
+	}
+	// Failure warning goes to stderr only.
+	if strings.Contains(out.String(), "check failed") {
+		t.Errorf("failure warning leaked to stdout: %q", out.String())
+	}
+	if !strings.Contains(errOut.String(), "check failed") {
+		t.Errorf("errOut missing failure warning: %q", errOut.String())
+	}
+}
+
 func TestPrintVersion_Local(t *testing.T) {
-	var buf bytes.Buffer
-	printVersion(&buf, parseVersion("v0.1.0"), false)
-	got := buf.String()
+	var out, errOut bytes.Buffer
+	printVersion(&out, &errOut, parseVersion("v0.1.0"), false)
+	got := out.String()
 	if !strings.Contains(got, "v0.1.0") || !strings.Contains(got, "(release)") {
 		t.Errorf("printVersion output missing release label: %q", got)
 	}
 	if strings.Contains(got, "latest release") {
 		t.Errorf("printVersion(check=false) leaked a remote-check line: %q", got)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("printVersion(check=false) wrote to errOut: %q", errOut.String())
 	}
 }

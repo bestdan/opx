@@ -103,7 +103,8 @@ func message(req Request) string {
 // user clicks Deny (or presses Escape), which is what we check below.
 //
 // `giving up after 60` auto-dismisses (treated as denial) if the user walks
-// away — fail-closed safety net for unattended terminals.
+// away — fail-closed safety net for unattended terminals. macOS-only: the
+// zenity and /dev/tty paths block until the user responds.
 func confirmDarwin(req Request, stderr io.Writer) error {
 	iconClause := "with icon caution"
 	if path := writeIconFile(); path != "" {

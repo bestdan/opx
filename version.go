@@ -102,11 +102,11 @@ func (v versionInfo) label() string {
 	}
 }
 
-// printVersion writes the local version label to stdout. With check=true it
-// also queries the GitHub releases API and appends a comparison line. The
-// remote check is best-effort: any failure prints a one-line warning to
-// stderr and does not affect the exit code.
-func printVersion(out io.Writer, v versionInfo, check bool) {
+// printVersion writes the local version label to out. With check=true it
+// also queries the GitHub releases API and appends a comparison line to out
+// on success, or a one-line warning to errOut on failure. The remote check
+// is best-effort: failures do not affect the exit code.
+func printVersion(out, errOut io.Writer, v versionInfo, check bool) {
 	fmt.Fprintln(out, v.label())
 	if !check {
 		return
@@ -115,7 +115,7 @@ func printVersion(out io.Writer, v versionInfo, check bool) {
 	defer cancel()
 	latest, err := fetchLatestReleaseTag(ctx, "bestdan", "opx")
 	if err != nil {
-		fmt.Fprintf(out, "latest release: check failed (%v)\n", err)
+		fmt.Fprintf(errOut, "latest release: check failed (%v)\n", err)
 		return
 	}
 	fmt.Fprintf(out, "latest release: %s — %s\n", latest, compareToRelease(v, latest))
@@ -126,9 +126,10 @@ func printVersion(out io.Writer, v versionInfo, check bool) {
 // output and the semantics are easier to read in prose.
 func compareToRelease(v versionInfo, latest string) string {
 	if v.tag == "" {
-		// No tag in the build — we're on a sha-only pre-release dev build,
-		// so by definition we predate any tagged release.
-		return fmt.Sprintf("you are on a pre-release dev build; install %s to update", latest)
+		// No tag in the build — could be a fork, a shallow clone with tags
+		// stripped, or a build before any release existed. We can't order
+		// against `latest`, so report without claiming direction.
+		return fmt.Sprintf("local build has no tag metadata; latest published release is %s", latest)
 	}
 	cmp, err := compareSemver(v.tag, latest)
 	if err != nil {
@@ -140,19 +141,29 @@ func compareToRelease(v versionInfo, latest string) string {
 	case cmp > 0:
 		return fmt.Sprintf("you are on a tag newer than the published release (%s > %s)", v.tag, latest)
 	default:
-		// Same tag — the only differentiator is whether we're past it.
-		if v.ahead > 0 || v.dirty {
+		// Same tag — distinguish "past" (commits ahead) from "on tag with
+		// uncommitted changes" so a dirty rebuild of the release isn't
+		// mislabelled as ahead.
+		switch {
+		case v.ahead > 0:
 			return "you are on a dev build past the latest release"
+		case v.dirty:
+			return "you are on the latest release with uncommitted changes"
+		default:
+			return "you are up to date"
 		}
-		return "you are up to date"
 	}
 }
+
+// githubAPIBase is the GitHub REST API root. Overridable so tests can point
+// at an httptest.Server.
+var githubAPIBase = "https://api.github.com"
 
 // fetchLatestReleaseTag returns the tag_name of the most recent published
 // release on GitHub. Public repos don't require auth, so we hit the REST
 // API directly with stdlib net/http — no gh dependency, no token.
 func fetchLatestReleaseTag(ctx context.Context, owner, repo string) (string, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo)
+	url := fmt.Sprintf("%s/repos/%s/%s/releases/latest", githubAPIBase, owner, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err

@@ -65,7 +65,7 @@ var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func main() {
 	if wantVersion(os.Args[1:]) {
-		printVersion(os.Stdout, parseVersion(version), wantCheck(os.Args[1:]))
+		printVersion(os.Stdout, os.Stderr, parseVersion(version), wantCheck(os.Args[1:]))
 		os.Exit(exitSuccess)
 	}
 	verbose, args := extractVerbose(os.Args[1:])

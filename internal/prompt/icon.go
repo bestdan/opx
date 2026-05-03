@@ -63,8 +63,16 @@ func writeIconFile() string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
 	if err := png.Encode(f, tinted); err != nil {
+		f.Close()
+		os.Remove(path)
+		return ""
+	}
+	if err := f.Close(); err != nil {
+		// Close can surface late write errors (full disk, etc.). Drop the
+		// half-written file so AppleScript falls back instead of trying to
+		// load a truncated PNG.
+		os.Remove(path)
 		return ""
 	}
 	return path

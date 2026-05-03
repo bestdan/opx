@@ -6,9 +6,6 @@ LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
 
 .PHONY: build test test-integration test-all clean cross lint icon
 
-ICON_SRC := internal/prompt/assets/build/draw_icon.py
-ICON_OUT := internal/prompt/assets/opx.icns
-
 ## build: compile opx for the current platform.
 build:
 	go build $(LDFLAGS) -o $(BINARY) .
