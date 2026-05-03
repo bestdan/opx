@@ -25,53 +25,87 @@ residual session is left behind for another process to abuse.
 
 ## Installation
 
-Requires Go 1.24+ and the [`op`](https://developer.1password.com/docs/cli/)
-CLI installed and on `PATH`.
+Prerequisites:
 
-```sh
-make build              # builds ./opx for the current platform
-make cross              # cross-compiles for darwin-arm64, darwin-amd64, linux-amd64
-make test
-make lint
-```
+- **Go 1.24 or newer.** Check with `go version`. If missing, install from
+  [go.dev/dl](https://go.dev/dl/) or via Homebrew (`brew install go`).
+- **The 1Password CLI (`op`).** Check with `op --version`. If missing,
+  install from [1Password's docs](https://developer.1password.com/docs/cli/get-started/)
+  or via Homebrew (`brew install --cask 1password-cli`). Make sure
+  biometric unlock is enabled in the 1Password desktop app under
+  **Settings → Developer → Integrate with 1Password CLI**.
 
-Drop the resulting `opx` binary somewhere on your `PATH`.
+Step by step:
+
+1. **Clone the repo and enter it.**
+
+   ```sh
+   git clone https://github.com/bestdan/opx.git
+   cd opx
+   ```
+
+2. **Build the binary.** This produces an `opx` executable in the current
+   directory.
+
+   ```sh
+   make build
+   ```
+
+3. **Move the binary onto your `PATH`.** `/usr/local/bin` is a standard
+   location that is already on `PATH` for most shells:
+
+   ```sh
+   sudo mv opx /usr/local/bin/
+   ```
+
+   If you'd rather not use `sudo`, install to `~/.local/bin` and add that
+   directory to your `PATH` in `~/.zshrc` or `~/.bashrc`:
+
+   ```sh
+   mkdir -p ~/.local/bin
+   mv opx ~/.local/bin/
+   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+4. **(macOS only) Clear the quarantine attribute** so Gatekeeper doesn't
+   block the unsigned binary on first run:
+
+   ```sh
+   xattr -d com.apple.quarantine "$(which opx)" 2>/dev/null || true
+   ```
+
+5. **Verify the install.** From any directory:
+
+   ```sh
+   opx
+   ```
+
+   You should see a usage message ending in exit code 2. That means
+   `opx` is on your `PATH` and ready to use — see the next section.
 
 ## Usage
 
-Direct mode — pass an `op://` URI:
+Pass an `op://` URI:
 
 ```sh
 opx op://Personal/GitHub/token
 ```
 
-Allowlist mode — pass a logical name resolved through your config file:
+The secret is written to stdout; everything else (dialog text, errors,
+warnings) goes to stderr, so you can pipe the secret directly:
 
 ```sh
-opx get github-token
+export GITHUB_TOKEN="$(opx op://Personal/GitHub/token)"
 ```
-
-The allowlist lives at `~/.config/opx/allowlist.json` (override with
-`OPX_CONFIG=/path/to/file`) and looks like:
-
-```json
-{
-  "github-token": "op://Personal/GitHub/token",
-  "aws-key":      "op://Work/AWS/access_key_id"
-}
-```
-
-`opx` refuses to load the file unless it is owned by the current user and
-not world-readable — fix with `chmod 600 ~/.config/opx/allowlist.json`.
 
 ### Exit codes
 
-| Code | Meaning                                               |
-|------|-------------------------------------------------------|
-| 0    | Secret printed to stdout                              |
-| 1    | `op` failed, user denied the prompt, or interrupted   |
-| 2    | Usage error (no args, malformed URI)                  |
-| 3    | Config error (allowlist missing, bad perms, bad JSON) |
+| Code | Meaning                                             |
+|------|-----------------------------------------------------|
+| 0    | Secret printed to stdout                            |
+| 1    | `op` failed, user denied the prompt, or interrupted |
+| 2    | Usage error (no args, malformed URI)                |
 
 ## Common gotchas
 
@@ -80,35 +114,12 @@ not world-readable — fix with `chmod 600 ~/.config/opx/allowlist.json`.
 - **No GUI prompt available.** On macOS `opx` requires `osascript`
   (preinstalled). On Linux it tries `zenity` first and falls back to a
   `/dev/tty` y/N prompt — if there is no TTY (e.g. a daemonized cron job)
-  the request is denied with `ErrDenied`. Run `opx` interactively.
-- **Allowlist permissions.** `Load` rejects files that are world-readable
-  (`mode & 0o004 != 0`) or owned by another UID. Both checks fire before
-  any JSON parsing, so a "config error" usually means `chmod 600`.
-- **Allowlist URI validation.** Every value must be a syntactically valid
-  `op://vault/item/field` URI with three non-empty segments. A typo like
-  `op://vault/item/` rejects the whole file.
-- **`make build` says `version=dev`.** The Makefile injects
-  `main.version` from `git describe --tags --always --dirty`, which prints
-  `dev` when there are no tags or you build from a tarball. Tag a release
-  (`git tag v0.1.0`) before building if you want a real version stamped in.
-- **Cross-compiling.** `make cross` sets `CGO_ENABLED=0` so the binaries
-  are statically linked and portable. Don't add cgo dependencies unless
-  you're prepared to drop the cross target.
+  the request is denied. Run `opx` interactively.
 - **macOS Gatekeeper.** A locally built `opx` binary is unsigned; the
   first run from Finder will be blocked. Either run it from a terminal or
   remove the quarantine attribute: `xattr -d com.apple.quarantine ./opx`.
-- **Caller name on non-Linux/macOS.** The `caller` package reads
-  `/proc/<ppid>/comm` on Linux and shells out to `ps` elsewhere. On
-  platforms without either it returns `"unknown"` — the dialog still
-  works, it just can't name the requesting process.
 
-## Layout
+## Contributing
 
-```
-main.go                 # CLI entry point, exit codes, signal handling
-internal/allowlist/     # Loads & validates ~/.config/opx/allowlist.json
-internal/caller/        # Resolves the parent process name (ppid → comm)
-internal/oprunner/      # Thin wrapper around `op read` and `op session forget`
-internal/prompt/        # Platform-native confirmation dialog (osascript/zenity/tty)
-internal/uri/           # `op://` URI syntax validator
-```
+See [`dev_docs/development.md`](dev_docs/development.md) for build,
+test, layout, and coding conventions.
