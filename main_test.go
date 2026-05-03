@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -40,8 +39,8 @@ var _ oprunner.Runner = (*fakeRunner)(nil)
 
 // fakeConfirmer implements prompt.Confirmer for tests.
 type fakeConfirmer struct {
-	err          error
-	calledWith   []string // records URIs passed to Confirm
+	err        error
+	calledWith []string // records URIs passed to Confirm
 }
 
 func (f *fakeConfirmer) Confirm(uri, callerName string) error {
@@ -58,29 +57,17 @@ func allow() *fakeConfirmer { return &fakeConfirmer{} }
 // deny is a shorthand for a confirmer that always denies access.
 func deny() *fakeConfirmer { return &fakeConfirmer{err: prompt.ErrDenied} }
 
-// writeAllowlist writes a 0o600 JSON allowlist file in a fresh temp dir and
-// returns its path.
-func writeAllowlist(t *testing.T, body string) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "allowlist.json")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	return path
-}
-
 func TestRun_NoArgs(t *testing.T) {
 	fr := &fakeRunner{}
-	code := run([]string{}, "", fr, allow())
+	code := run([]string{}, fr, allow())
 	if code != exitUsage {
 		t.Errorf("got exit code %d, want %d", code, exitUsage)
 	}
 }
 
-func TestRun_DirectMode_Success(t *testing.T) {
+func TestRun_Success(t *testing.T) {
 	fr := &fakeRunner{secret: []byte("supersecret")}
-	code := run([]string{"op://Vault/Item/field"}, "", fr, allow())
+	code := run([]string{"op://Vault/Item/field"}, fr, allow())
 	if code != exitSuccess {
 		t.Errorf("got exit code %d, want %d", code, exitSuccess)
 	}
@@ -89,9 +76,9 @@ func TestRun_DirectMode_Success(t *testing.T) {
 	}
 }
 
-func TestRun_DirectMode_OpFailure(t *testing.T) {
+func TestRun_OpFailure(t *testing.T) {
 	fr := &fakeRunner{readErr: errors.New("authentication failed")}
-	code := run([]string{"op://Vault/Item/field"}, "", fr, allow())
+	code := run([]string{"op://Vault/Item/field"}, fr, allow())
 	if code != exitOpFail {
 		t.Errorf("got exit code %d, want %d", code, exitOpFail)
 	}
@@ -102,7 +89,7 @@ func TestRun_DirectMode_OpFailure(t *testing.T) {
 
 func TestRun_InvalidURI(t *testing.T) {
 	fr := &fakeRunner{}
-	code := run([]string{"not-a-uri"}, "", fr, allow())
+	code := run([]string{"not-a-uri"}, fr, allow())
 	if code != exitUsage {
 		t.Errorf("got exit code %d, want %d", code, exitUsage)
 	}
@@ -112,55 +99,9 @@ func TestRun_InvalidURI(t *testing.T) {
 	}
 }
 
-func TestRun_GetSubcommand_MissingName(t *testing.T) {
-	fr := &fakeRunner{}
-	code := run([]string{"get"}, "", fr, allow())
-	if code != exitUsage {
-		t.Errorf("got exit code %d, want %d", code, exitUsage)
-	}
-}
-
-func TestRun_GetSubcommand_Success(t *testing.T) {
-	const wantURI = "op://Personal/GitHub/token"
-	fr := &fakeRunner{secret: []byte("my-secret-value")}
-	fc := allow()
-	configPath := writeAllowlist(t, `{"github-token":"`+wantURI+`"}`)
-
-	code := run([]string{"get", "github-token"}, configPath, fr, fc)
-	if code != exitSuccess {
-		t.Errorf("run() exit code = %d, want %d", code, exitSuccess)
-	}
-	if fr.forgetCalled != 1 {
-		t.Errorf("ForgetSession called %d times, want 1", fr.forgetCalled)
-	}
-	if len(fc.calledWith) != 1 || fc.calledWith[0] != wantURI {
-		t.Errorf("Confirm called with %v, want [%s]", fc.calledWith, wantURI)
-	}
-}
-
-func TestRun_GetSubcommand_UnknownName(t *testing.T) {
-	fr := &fakeRunner{}
-	configPath := writeAllowlist(t, `{"github-token":"op://Personal/GitHub/token"}`)
-	code := run([]string{"get", "missing"}, configPath, fr, allow())
-	if code != exitConfig {
-		t.Errorf("got exit code %d, want %d", code, exitConfig)
-	}
-	if fr.forgetCalled != 0 {
-		t.Errorf("ForgetSession called %d times, want 0 (op never started)", fr.forgetCalled)
-	}
-}
-
-func TestRun_GetSubcommand_BadConfig(t *testing.T) {
-	fr := &fakeRunner{}
-	code := run([]string{"get", "anything"}, "/nonexistent/allowlist.json", fr, allow())
-	if code != exitConfig {
-		t.Errorf("got exit code %d, want %d", code, exitConfig)
-	}
-}
-
 func TestRun_ForgetCalledOnReadError(t *testing.T) {
 	fr := &fakeRunner{readErr: errors.New("biometric failed")}
-	code := run([]string{"op://V/I/f"}, "", fr, allow())
+	code := run([]string{"op://V/I/f"}, fr, allow())
 	if code != exitOpFail {
 		t.Errorf("got exit code %d, want %d", code, exitOpFail)
 	}
@@ -180,7 +121,7 @@ func TestRun_ForgetWarningOnForgetError(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
-	code := run([]string{"op://V/I/f"}, "", fr, allow())
+	code := run([]string{"op://V/I/f"}, fr, allow())
 
 	w.Close()
 	os.Stderr = old
@@ -202,7 +143,7 @@ func TestRun_ConfirmDeny_NoOpRead(t *testing.T) {
 	// When the user denies the dialog, op should never be called and the exit
 	// code must be exitOpFail.
 	fr := &fakeRunner{secret: []byte("should-not-be-returned")}
-	code := run([]string{"op://V/I/f"}, "", fr, deny())
+	code := run([]string{"op://V/I/f"}, fr, deny())
 	if code != exitOpFail {
 		t.Errorf("got exit code %d, want %d after deny", code, exitOpFail)
 	}
@@ -216,7 +157,7 @@ func TestRun_ConfirmCalledWithCorrectURI(t *testing.T) {
 	const wantURI = "op://MyVault/MyItem/password"
 	fr := &fakeRunner{secret: []byte("val")}
 	fc := allow()
-	_ = run([]string{wantURI}, "", fr, fc)
+	_ = run([]string{wantURI}, fr, fc)
 	if len(fc.calledWith) != 1 || fc.calledWith[0] != wantURI {
 		t.Errorf("Confirm called with %v, want [%s]", fc.calledWith, wantURI)
 	}

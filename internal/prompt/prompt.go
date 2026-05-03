@@ -17,9 +17,10 @@ import (
 	"strings"
 )
 
-// ErrDenied is returned by Confirm when the user explicitly denies access or
-// when no UI/TTY is available to ask. Tooling failures (e.g. osascript missing)
-// are wrapped with %w so callers can still detect them via errors.Is.
+// ErrDenied is returned by Confirm when the user explicitly denies access,
+// when no UI/TTY is available to ask, or when the prompt tool itself fails.
+// All failure modes collapse to ErrDenied so the caller fails closed: a
+// secret-gating prompt that can't ask the user must not proceed.
 var ErrDenied = errors.New("access denied by user")
 
 // Confirmer presents the user with a confirmation dialog.

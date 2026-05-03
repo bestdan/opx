@@ -7,8 +7,7 @@
 //
 // Usage:
 //
-//	opx <op://uri>         # direct mode
-//	opx get <logical-name> # allowlist mode
+//	opx <op://uri>
 package main
 
 import (
@@ -18,7 +17,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/bestdan/opx/internal/allowlist"
 	"github.com/bestdan/opx/internal/caller"
 	"github.com/bestdan/opx/internal/oprunner"
 	"github.com/bestdan/opx/internal/prompt"
@@ -30,7 +28,6 @@ const (
 	exitSuccess = 0
 	exitOpFail  = 1
 	exitUsage   = 2
-	exitConfig  = 3
 )
 
 func main() {
@@ -46,48 +43,23 @@ func main() {
 			os.Exit(exitOpFail)
 		}
 	}()
-	os.Exit(run(os.Args[1:], os.Getenv("OPX_CONFIG"), runner, prompt.New()))
+	os.Exit(run(os.Args[1:], runner, prompt.New()))
 }
 
 // run is the main logic, separated from main() so it is testable.
-// configPath overrides the default allowlist location (~/.config/opx/allowlist.json)
-// when non-empty; tests pass a temp path here.
-func run(args []string, configPath string, r oprunner.Runner, c prompt.Confirmer) int {
+func run(args []string, r oprunner.Runner, c prompt.Confirmer) int {
 	if len(args) == 0 {
 		printUsage()
 		return exitUsage
 	}
 
-	var opURI string
-
-	switch {
-	case args[0] == "get":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: opx get <name>")
-			return exitUsage
-		}
-		al, err := allowlist.Load(configPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-			return exitConfig
-		}
-		resolved, ok := al.Resolve(args[1])
-		if !ok {
-			fmt.Fprintf(os.Stderr, "config error: name %q not found in allowlist\n", args[1])
-			return exitConfig
-		}
-		opURI = resolved
-
-	case uri.IsOPURI(args[0]):
-		opURI = args[0]
-
-	default:
+	if !uri.IsOPURI(args[0]) {
 		fmt.Fprintf(os.Stderr, "usage error: %q is not a valid op:// URI\n", args[0])
 		printUsage()
 		return exitUsage
 	}
 
-	return confirmAndRead(opURI, r, c)
+	return confirmAndRead(args[0], r, c)
 }
 
 // confirmAndRead shows the confirmation dialog and, if approved, reads the secret.
@@ -135,5 +107,4 @@ func readAndForget(uri string, r oprunner.Runner) int {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage: opx <op://uri>")
-	fmt.Fprintln(os.Stderr, "       opx get <name>")
 }
