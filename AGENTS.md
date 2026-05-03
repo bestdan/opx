@@ -19,6 +19,7 @@ main_test.go            # end-to-end tests of run() with fake Runner/Confirmer
 internal/caller/        # parent process name (ppid → /proc/.../comm or `ps`)
 internal/oprunner/      # `op read` / `op signout` subprocess wrapper (Runner interface)
 internal/prompt/        # platform-native confirm dialog (osascript / zenity / /dev/tty)
+internal/prompt/assets/ # embedded white-on-transparent PNG (Go recolors at runtime); build/ has the Python source — `make icon`
 internal/shellquote/    # POSIX single-quote escaper for --env output
 internal/uri/           # `op://vault/item/field` syntax validator
 scripts/                # local-dev scaffolding: fixtures, smoke test, install helper

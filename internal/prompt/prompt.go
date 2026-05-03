@@ -12,6 +12,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -45,24 +46,31 @@ type Confirmer interface {
 	Confirm(req Request) error
 }
 
-// New returns the default Confirmer for the current platform.
-func New() Confirmer { return &systemConfirmer{} }
+// New returns the default Confirmer for the current platform.  Subprocess
+// stderr (osascript / zenity) is forwarded to os.Stderr.
+func New() Confirmer { return &systemConfirmer{stderr: os.Stderr} }
 
-type systemConfirmer struct{}
+// NewWithStderr returns a Confirmer that writes osascript/zenity stderr to w.
+// Pass io.Discard to silence the dialog backend's diagnostic output.
+func NewWithStderr(w io.Writer) Confirmer { return &systemConfirmer{stderr: w} }
+
+type systemConfirmer struct {
+	stderr io.Writer
+}
 
 func (s *systemConfirmer) Confirm(req Request) error {
 	switch runtime.GOOS {
 	case "darwin":
-		return confirmDarwin(req)
+		return confirmDarwin(req, s.stderr)
 	default:
-		return confirmLinux(req)
+		return confirmLinux(req, s.stderr)
 	}
 }
 
 // message returns the human-readable body shown in the dialog.  For a single
 // binding it preserves the original "X wants to read: op://..." phrasing; for
-// multiple bindings it lists each URI on its own line, with the bound variable
-// name appended when present.
+// multiple bindings it lists each URI on its own line separated by blank
+// lines, with the bound variable name appended when present.
 func message(req Request) string {
 	if len(req.Bindings) == 1 && req.Bindings[0].Name == "" {
 		return fmt.Sprintf("%q wants to read:\n\n%s", req.Caller, req.Bindings[0].URI)
@@ -73,11 +81,15 @@ func message(req Request) string {
 		b.WriteByte('s')
 	}
 	b.WriteString(":\n")
+	// Blank line between bullets so long URI lists don't pile up. The leading
+	// "\n\n" before each bullet adds one separator line above the bullet; the
+	// first bullet's leading blank line also separates the list from the
+	// "wants to read N secrets:" header.
 	for _, bind := range req.Bindings {
 		if bind.Name != "" {
-			fmt.Fprintf(&b, "\n  • %s  →  $%s", bind.URI, bind.Name)
+			fmt.Fprintf(&b, "\n\n  • %s  →  $%s", bind.URI, bind.Name)
 		} else {
-			fmt.Fprintf(&b, "\n  • %s", bind.URI)
+			fmt.Fprintf(&b, "\n\n  • %s", bind.URI)
 		}
 	}
 	return b.String()
@@ -89,27 +101,45 @@ func message(req Request) string {
 // for *every* button click and only records which one was pressed in stdout.
 // Marking Deny as the cancel button makes osascript exit non-zero when the
 // user clicks Deny (or presses Escape), which is what we check below.
-func confirmDarwin(req Request) error {
+//
+// `giving up after 60` auto-dismisses (treated as denial) if the user walks
+// away — fail-closed safety net for unattended terminals. macOS-only: the
+// zenity and /dev/tty paths block until the user responds.
+func confirmDarwin(req Request, stderr io.Writer) error {
+	iconClause := "with icon caution"
+	if path := writeIconFile(); path != "" {
+		// AppleScript string-escape the path: backslash + quote.
+		esc := strings.ReplaceAll(path, `\`, `\\`)
+		esc = strings.ReplaceAll(esc, `"`, `\"`)
+		iconClause = fmt.Sprintf(`with icon file (POSIX file "%s")`, esc)
+	}
+	title := fmt.Sprintf("opx — %s requesting secret access", req.Caller)
 	script := fmt.Sprintf(
-		`display dialog %q with title "opx - Secret Access Request" `+
+		`display dialog %q with title %q `+
 			`buttons {"Deny", "Allow"} default button "Allow" cancel button "Deny" `+
-			`with icon caution`,
-		message(req),
+			`%s giving up after 60`,
+		message(req), title, iconClause,
 	)
 	cmd := exec.Command("osascript", "-e", script)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	cmd.Stderr = stderr
+	out, err := cmd.Output()
+	if err != nil {
 		// Non-zero exit means the user clicked Deny, pressed Escape, or
 		// osascript itself failed (missing binary, etc.). All treated as denial.
+		return ErrDenied
+	}
+	// `giving up after` makes osascript exit 0 even on timeout; the result
+	// record contains `gave up:true`. Detect that and fail closed.
+	if strings.Contains(string(out), "gave up:true") {
 		return ErrDenied
 	}
 	return nil
 }
 
 // confirmLinux tries zenity first, then falls back to a /dev/tty prompt.
-func confirmLinux(req Request) error {
+func confirmLinux(req Request, stderr io.Writer) error {
 	if _, err := exec.LookPath("zenity"); err == nil {
-		return confirmZenity(req)
+		return confirmZenity(req, stderr)
 	}
 	return confirmTTY(req)
 }
@@ -119,7 +149,7 @@ func confirmLinux(req Request) error {
 // zenity interprets Pango markup in --text, so &, <, and > in the URI or
 // caller name would either render wrong or cause zenity to refuse the
 // dialog. Escape them before passing the message in.
-func confirmZenity(req Request) error {
+func confirmZenity(req Request, stderr io.Writer) error {
 	cmd := exec.Command(
 		"zenity",
 		"--question",
@@ -129,7 +159,7 @@ func confirmZenity(req Request) error {
 		"--cancel-label=Deny",
 		"--width=500",
 	)
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		return ErrDenied
 	}

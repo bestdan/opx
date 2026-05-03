@@ -14,7 +14,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"regexp"
@@ -29,19 +31,53 @@ import (
 )
 
 // Exit codes.
+//
+// exitDenied is reserved for "user said no" — the dialog was denied, timed
+// out, or no UI was available. This is distinct from exitOpFail (the tool
+// itself broke) so callers can branch on user intent vs. infrastructure
+// error even when stderr is silent.
 const (
 	exitSuccess = 0
 	exitOpFail  = 1
 	exitUsage   = 2
+	exitDenied  = 3
 )
+
+// version is set at build time via `-ldflags "-X main.version=..."` (see
+// Makefile). The default makes `go run .` and unstripped builds report
+// something useful instead of an empty string.
+var version = "dev"
+
+// diag is the destination for diagnostic stderr output. It defaults to
+// io.Discard (silent) and is flipped to os.Stderr when --verbose / OPX_VERBOSE
+// is set. Subprocess stderr (op, osascript, zenity) and our own logging both
+// route through this writer. main() is the only place that mutates it.
+//
+// Set-once-in-main, then read-only for the rest of execution — no races.
+var diag io.Writer = io.Discard
+
+// diagf writes a verbose-only diagnostic line. No-op in quiet mode because
+// diag is io.Discard.
+func diagf(format string, a ...any) { fmt.Fprintf(diag, format, a...) }
 
 // envNameRE matches POSIX-portable shell variable names.
 var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func main() {
-	runner := oprunner.New()
+	if wantVersion(os.Args[1:]) {
+		printVersion(os.Stdout, os.Stderr, parseVersion(version), wantCheck(os.Args[1:]))
+		os.Exit(exitSuccess)
+	}
+	verbose, args := extractVerbose(os.Args[1:])
+	if verbose {
+		diag = os.Stderr
+	}
+	runner := oprunner.NewWithStderr(diag)
+	confirmer := prompt.NewWithStderr(diag)
 
-	// Recover from panics so the session forget still runs.
+	// Recover from panics so the session forget still runs. Panic output
+	// always goes to os.Stderr (not diag) — a panic is an invariant
+	// violation and silencing it would hide real bugs.
 	defer func() {
 		if r := recover(); r != nil {
 			if err := runner.ForgetSession(); err != nil {
@@ -51,10 +87,56 @@ func main() {
 			os.Exit(exitOpFail)
 		}
 	}()
-	os.Exit(run(os.Args[1:], runner, prompt.New()))
+	os.Exit(run(args, runner, confirmer))
+}
+
+// wantVersion reports whether --version / -V appears anywhere in args.
+// Checked before extractVerbose so the version path can short-circuit even
+// when combined with other flags.
+func wantVersion(args []string) bool {
+	for _, a := range args {
+		if a == "--version" || a == "-V" {
+			return true
+		}
+	}
+	return false
+}
+
+// wantCheck reports whether --check appears in args. Only meaningful when
+// --version is also present; a bare --check is treated as an unknown flag
+// by parseArgs and yields a usage error.
+func wantCheck(args []string) bool {
+	for _, a := range args {
+		if a == "--check" {
+			return true
+		}
+	}
+	return false
+}
+
+// extractVerbose pulls --verbose / -v out of args and returns the filtered
+// argument list along with the resulting verbosity. OPX_VERBOSE=1 in the
+// environment is equivalent to passing --verbose.
+func extractVerbose(args []string) (verbose bool, rest []string) {
+	if v := os.Getenv("OPX_VERBOSE"); v != "" && v != "0" {
+		verbose = true
+	}
+	rest = make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--verbose" || a == "-v" {
+			verbose = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return verbose, rest
 }
 
 // run is the main logic, separated from main() so it is testable.
+//
+// Usage output (parse errors, zero-args help) always prints to os.Stderr
+// regardless of verbosity — without it a new user has no signal that they
+// typoed a flag. Everything else routes through the diag writer.
 func run(args []string, r oprunner.Runner, c prompt.Confirmer) int {
 	bindings, envMode, err := parseArgs(args)
 	if err != nil {
@@ -159,7 +241,15 @@ func confirmAndRead(bindings []prompt.Binding, envMode bool, r oprunner.Runner, 
 		Caller:   caller.Name(),
 	}
 	if err := c.Confirm(req); err != nil {
-		fmt.Fprintf(os.Stderr, "opx: %v\n", err)
+		// Denial / dialog timeout / no UI all collapse to ErrDenied — that's
+		// the user-intent path (exit 3). Anything else is treated as a tool
+		// failure (exit 1). Today only ErrDenied flows here, but the split
+		// makes the boundary explicit if Confirm grows new error modes.
+		if errors.Is(err, prompt.ErrDenied) {
+			diagf("denied (%v)\n", err)
+			return exitDenied
+		}
+		diagf("confirm failed: %v\n", err)
 		return exitOpFail
 	}
 	return readAndForget(bindings, envMode, r)
@@ -188,24 +278,48 @@ func readAndForget(bindings []prompt.Binding, envMode bool, r oprunner.Runner) i
 
 	// Always forget the session — even when interrupted or on error.
 	if ferr := r.ForgetSession(); ferr != nil {
-		fmt.Fprintf(os.Stderr, "warning: op signout failed: %v\n", ferr)
+		diagf("warning: op signout failed: %v\n", ferr)
 	}
 
 	// If context was cancelled the user interrupted us; exit without output.
 	if ctx.Err() != nil {
+		diagf("interrupted\n")
 		return exitOpFail
 	}
 	if readErr != nil {
-		// op's own error messages already went to stderr via cmd.Stderr.
+		// op's own stderr was routed to diag (visible only in verbose mode);
+		// add our own one-line summary so the user sees a clear top-level
+		// reason without scanning op's diagnostic output.
+		diagf("read failed: %v\n", readErr)
 		return exitOpFail
 	}
 
 	out := renderOutput(bindings, secrets, envMode)
 	if _, err := os.Stdout.Write(out); err != nil {
-		fmt.Fprintf(os.Stderr, "error writing output: %v\n", err)
+		diagf("error writing output: %v\n", err)
 		return exitOpFail
 	}
+	diagf("%s\n", successSummary(bindings, envMode))
 	return exitSuccess
+}
+
+// successSummary returns the verbose-mode confirmation line printed after a
+// successful read. Format mirrors the dialog title: caller name, then either
+// the URI (single mode) or the count plus bound variable list (--env mode).
+func successSummary(bindings []prompt.Binding, envMode bool) string {
+	c := caller.Name()
+	if !envMode {
+		return fmt.Sprintf("%q → %s", c, bindings[0].URI)
+	}
+	names := make([]string, len(bindings))
+	for i, b := range bindings {
+		names[i] = "$" + b.Name
+	}
+	noun := "secret"
+	if len(bindings) != 1 {
+		noun = "secrets"
+	}
+	return fmt.Sprintf("%q → %d %s (%s)", c, len(bindings), noun, strings.Join(names, ", "))
 }
 
 // renderOutput returns the bytes to write to stdout.  In single-URI legacy
@@ -227,6 +341,13 @@ func renderOutput(bindings []prompt.Binding, secrets [][]byte, envMode bool) []b
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "usage: opx <op://uri>")
-	fmt.Fprintln(os.Stderr, "       opx --env NAME=<op://uri> [--env NAME=<op://uri> ...]")
+	fmt.Fprintln(os.Stderr, "usage: opx [--verbose] <op://uri>")
+	fmt.Fprintln(os.Stderr, "       opx [--verbose] --env NAME=<op://uri> [--env NAME=<op://uri> ...]")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  --verbose, -v    write diagnostics to stderr (default: silent)")
+	fmt.Fprintln(os.Stderr, "                   OPX_VERBOSE=1 in the environment is equivalent")
+	fmt.Fprintln(os.Stderr, "  --version, -V    print version and exit")
+	fmt.Fprintln(os.Stderr, "                   add --check to compare against the latest GitHub release")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Exit codes: 0 ok, 1 op/tool failure, 2 usage error, 3 user denied")
 }
