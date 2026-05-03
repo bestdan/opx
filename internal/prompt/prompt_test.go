@@ -50,3 +50,24 @@ func TestNew_ReturnsConfirmer(t *testing.T) {
 		t.Error("prompt.New() returned nil")
 	}
 }
+
+// TestPangoEscape exercises the escape applied before passing dialog text to
+// zenity. We invoke it via the exported PangoEscapeForTest seam (see
+// export_test.go) to keep the helper unexported.
+func TestPangoEscape(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"plain", "plain"},
+		{"a & b", "a &amp; b"},
+		{"<x>", "&lt;x&gt;"},
+		{"AT&T <op://x>", "AT&amp;T &lt;op://x&gt;"},
+		{"&lt;", "&amp;lt;"}, // already-entity must not be re-decoded
+	}
+	for _, tc := range cases {
+		got := prompt.PangoEscapeForTest(tc.in)
+		if got != tc.want {
+			t.Errorf("pangoEscape(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

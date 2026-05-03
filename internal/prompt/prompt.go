@@ -115,12 +115,16 @@ func confirmLinux(req Request) error {
 }
 
 // confirmZenity shows a GTK dialog using the zenity helper.
+//
+// zenity interprets Pango markup in --text, so &, <, and > in the URI or
+// caller name would either render wrong or cause zenity to refuse the
+// dialog. Escape them before passing the message in.
 func confirmZenity(req Request) error {
 	cmd := exec.Command(
 		"zenity",
 		"--question",
 		"--title=opx - Secret Access Request",
-		"--text="+message(req),
+		"--text="+pangoEscape(message(req)),
 		"--ok-label=Allow",
 		"--cancel-label=Deny",
 		"--width=500",
@@ -130,6 +134,18 @@ func confirmZenity(req Request) error {
 		return ErrDenied
 	}
 	return nil
+}
+
+// pangoEscape replaces the three characters Pango treats as markup with
+// their entity equivalents. Order matters: & must be replaced first so the
+// entities introduced for < and > aren't double-escaped.
+func pangoEscape(s string) string {
+	r := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+	)
+	return r.Replace(s)
 }
 
 // confirmTTY prompts directly on the controlling terminal, bypassing any
