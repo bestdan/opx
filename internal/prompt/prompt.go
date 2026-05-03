@@ -49,17 +49,23 @@ func message(uri, callerName string) string {
 }
 
 // confirmDarwin shows a native macOS dialog via osascript.
+//
+// `cancel button "Deny"` is load-bearing: without it, AppleScript exits 0
+// for *every* button click and only records which one was pressed in stdout.
+// Marking Deny as the cancel button makes osascript exit non-zero when the
+// user clicks Deny (or presses Escape), which is what we check below.
 func confirmDarwin(uri, callerName string) error {
 	script := fmt.Sprintf(
 		`display dialog %q with title "opx - Secret Access Request" `+
-			`buttons {"Deny", "Allow"} default button "Allow" with icon caution`,
+			`buttons {"Deny", "Allow"} default button "Allow" cancel button "Deny" `+
+			`with icon caution`,
 		message(uri, callerName),
 	)
 	cmd := exec.Command("osascript", "-e", script)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		// exit status 1 means the user clicked Deny or pressed Escape; any
-		// other error (osascript missing, etc.) is also treated as denial.
+		// Non-zero exit means the user clicked Deny, pressed Escape, or
+		// osascript itself failed (missing binary, etc.). All treated as denial.
 		return ErrDenied
 	}
 	return nil
