@@ -18,7 +18,7 @@ a window in which it can read arbitrary secrets without your knowledge.
    being requested and **which process** is asking.
 2. Run `op read <uri>`, which triggers a fresh biometric prompt.
 3. On exit — success, failure, panic, or `SIGINT`/`SIGTERM` — run
-   `op session forget --all` to invalidate any cached token.
+   `op signout --all` to invalidate any cached token.
 
 The result: every secret read is explicitly authorized by you, and no
 residual session is left behind for another process to abuse.

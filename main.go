@@ -2,8 +2,8 @@
 // Each invocation:
 //  1. Shows a confirmation dialog disclosing the requested URI(s) and calling process.
 //  2. Runs "op read <uri>" — triggering a fresh biometric prompt.
-//  3. On exit (success, failure, or signal), runs "op session forget --all"
-//     to invalidate the CLI session token, leaving no residual access.
+//  3. On exit (success, failure, or signal), runs "op signout --all" to
+//     invalidate the CLI session token, leaving no residual access.
 //
 // Usage:
 //
@@ -45,7 +45,7 @@ func main() {
 	defer func() {
 		if r := recover(); r != nil {
 			if err := runner.ForgetSession(); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: op session forget failed after panic: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: op signout failed after panic: %v\n", err)
 			}
 			fmt.Fprintf(os.Stderr, "panic: %v\n", r)
 			os.Exit(exitOpFail)
@@ -166,7 +166,7 @@ func confirmAndRead(bindings []prompt.Binding, envMode bool, r oprunner.Runner, 
 }
 
 // readAndForget runs "op read" for each binding sequentially and always calls
-// "op session forget --all" before returning, regardless of whether reads
+// "op signout --all" before returning, regardless of whether reads
 // succeeded, failed, or were interrupted by a signal.  Output is atomic: if
 // any read fails, nothing is written to stdout.
 func readAndForget(bindings []prompt.Binding, envMode bool, r oprunner.Runner) int {
@@ -188,7 +188,7 @@ func readAndForget(bindings []prompt.Binding, envMode bool, r oprunner.Runner) i
 
 	// Always forget the session — even when interrupted or on error.
 	if ferr := r.ForgetSession(); ferr != nil {
-		fmt.Fprintf(os.Stderr, "warning: op session forget failed: %v\n", ferr)
+		fmt.Fprintf(os.Stderr, "warning: op signout failed: %v\n", ferr)
 	}
 
 	// If context was cancelled the user interrupted us; exit without output.
