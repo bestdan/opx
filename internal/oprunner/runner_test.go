@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bestdan/opx/internal/oprunner"
 )
@@ -68,7 +69,11 @@ func TestReadSecret_CancelledContext(t *testing.T) {
 	withFakeOp(t, "sleep 30\n")
 	r := oprunner.NewWithStderr(io.Discard)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Bound the test so a regression in cancellation propagation fails in
+	// seconds rather than hanging until Go's default 10-minute test timeout.
+	parent, cancelParent := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelParent()
+	ctx, cancel := context.WithCancel(parent)
 	cancel()
 
 	_, err := r.ReadSecret(ctx, "op://V/I/f")
@@ -77,6 +82,20 @@ func TestReadSecret_CancelledContext(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected errors.Is(err, context.Canceled), got %v", err)
+	}
+}
+
+func TestReadSecret_Success(t *testing.T) {
+	const wantSecret = "sekret-value"
+	withFakeOp(t, "printf '"+wantSecret+"'\n")
+
+	r := oprunner.NewWithStderr(io.Discard)
+	out, err := r.ReadSecret(context.Background(), "op://V/I/f")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(out) != wantSecret {
+		t.Errorf("ReadSecret = %q, want %q", out, wantSecret)
 	}
 }
 

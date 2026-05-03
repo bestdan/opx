@@ -12,6 +12,7 @@ jobs:
   test:
     name: test (ubuntu-latest)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +33,7 @@ jobs:
   cross:
     name: cross-compile (CGO_ENABLED=0)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
