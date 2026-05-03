@@ -9,7 +9,7 @@
 //
 //	go test -tags=integration ./internal/oprunner/...
 //
-// Fixture URIs are read from scripts/.env.test (NAME=op://... per line).
+// Fixture URIs are read from scripts/.env.example (NAME=op://... per line).
 // At least one URI named CREDS is required; tests skip cleanly if absent.
 //
 // Heads up: running these will trigger one biometric prompt per read.
@@ -29,7 +29,7 @@ import (
 	"github.com/bestdan/opx/internal/oprunner"
 )
 
-// envFixtures loads NAME→URI pairs from scripts/.env.test, walking up from the
+// envFixtures loads NAME→URI pairs from scripts/.env.example, walking up from the
 // test working directory until it finds the repo root.  Returns nil if the
 // file does not exist.
 func envFixtures(t *testing.T) map[string]string {
@@ -39,7 +39,7 @@ func envFixtures(t *testing.T) map[string]string {
 		t.Fatalf("getwd: %v", err)
 	}
 	for {
-		candidate := filepath.Join(dir, "scripts", ".env.test")
+		candidate := filepath.Join(dir, "scripts", ".env.example")
 		if _, err := os.Stat(candidate); err == nil {
 			return parseEnvFile(t, candidate)
 		}
@@ -81,11 +81,11 @@ func requireURI(t *testing.T, name string) string {
 	t.Helper()
 	fix := envFixtures(t)
 	if fix == nil {
-		t.Skip("scripts/.env.test not found; set up fixtures to run integration tests")
+		t.Skip("scripts/.env.example not found; set up fixtures to run integration tests")
 	}
 	uri, ok := fix[name]
 	if !ok {
-		t.Skipf("scripts/.env.test missing entry %q", name)
+		t.Skipf("scripts/.env.example missing entry %q", name)
 	}
 	return uri
 }
@@ -138,7 +138,7 @@ func TestIntegration_ReadSecretBogusURI(t *testing.T) {
 	// Skip unless fixtures are present — this test still hits real op, so we
 	// gate it on the same setup as the others.
 	if envFixtures(t) == nil {
-		t.Skip("scripts/.env.test not found; set up fixtures to run integration tests")
+		t.Skip("scripts/.env.example not found; set up fixtures to run integration tests")
 	}
 	ctx, cancel := withTimeout(t)
 	defer cancel()
