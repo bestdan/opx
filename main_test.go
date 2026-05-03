@@ -79,7 +79,9 @@ func allow() *fakeConfirmer { return &fakeConfirmer{} }
 func deny() *fakeConfirmer { return &fakeConfirmer{err: prompt.ErrDenied} }
 
 // captureStdout runs fn with os.Stdout redirected to a pipe and returns what
-// was written.
+// was written. The restore and pipe close are deferred so a panic or
+// runtime.Goexit (e.g. from t.Fatal* inside fn) doesn't strand the reader
+// goroutine or leave os.Stdout pointing at a closed pipe for later tests.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout
@@ -87,7 +89,6 @@ func captureStdout(t *testing.T, fn func()) string {
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
-	os.Stdout = w
 	done := make(chan string, 1)
 	go func() {
 		var sb strings.Builder
@@ -103,9 +104,18 @@ func captureStdout(t *testing.T, fn func()) string {
 		}
 		done <- sb.String()
 	}()
+	os.Stdout = w
+	// Restore + close on every exit path, including panic / runtime.Goexit.
+	// On the happy path the close happens here first so the goroutine sees EOF;
+	// the deferred close is then a harmless no-op.
+	defer func() {
+		os.Stdout = old
+		_ = w.Close()
+		_ = r.Close()
+	}()
 	fn()
-	w.Close()
 	os.Stdout = old
+	_ = w.Close()
 	return <-done
 }
 

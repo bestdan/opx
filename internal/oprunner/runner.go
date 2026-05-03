@@ -48,5 +48,8 @@ func (r *realRunner) ReadSecret(ctx context.Context, uri string) ([]byte, error)
 }
 
 func (r *realRunner) ForgetSession() error {
-	return exec.Command("op", "signout", "--all").Run()
+	cmd := exec.Command("op", "signout", "--all")
+	cmd.Stderr = r.opStderr
+	cmd.Stdout = io.Discard
+	return cmd.Run()
 }
