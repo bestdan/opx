@@ -4,7 +4,7 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 # Strip debug info and symbol tables for a smaller binary (~2-5 MB target).
 LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
 
-.PHONY: build test test-integration test-all clean cross lint
+.PHONY: build test test-integration test-all clean cross lint setup-hooks
 
 ## build: compile opx for the current platform.
 build:
@@ -21,6 +21,12 @@ test-integration:
 
 ## test-all: run unit + integration tests. Use this locally before pushing.
 test-all: test test-integration
+
+## setup-hooks: point this clone at scripts/hooks/ for git hooks (pre-push runs test-all).
+##              Run once per fresh clone.
+setup-hooks:
+	git config core.hooksPath scripts/hooks
+	@echo "git hooks now sourced from scripts/hooks/"
 
 ## lint: run go vet (no external linter required).
 lint:

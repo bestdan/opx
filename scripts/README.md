@@ -1,7 +1,15 @@
 # scripts/
 
-Example scaffolding for exercising `opx` against your own 1Password vault.
-Both files are starting points — adapt them for your setup.
+Local-development scaffolding: fixtures, smoke tests, install helper, and
+git hooks. Adapt to your setup.
+
+## One-time setup per clone
+
+```sh
+make setup-hooks
+```
+
+Points this clone at `scripts/hooks/` so the tracked `pre-push` hook fires.
 
 ## Files
 
@@ -38,10 +46,27 @@ cd scripts && bash env_file_test.sh
 You should see one biometric prompt covering every URI, then a summary
 line with the lengths of each variable.
 
+### `local_rebuild.sh`
+
+Build, test, lint, and install `opx` into `/usr/local/bin/`. Requires
+`sudo` for the move. Bypasses `make test-integration` — run that
+separately if you want to hit a real vault.
+
+### `hooks/pre-push`
+
+Runs `make test-all` before any `git push`. Aborts the push on test
+failure. Bypass for one push with `git push --no-verify`. Active only
+after `make setup-hooks` (it reconfigures `core.hooksPath` for this
+clone).
+
+Heads-up: because `test-all` includes integration tests, every push will
+trigger biometric prompts. Use `--no-verify` for branches without
+fixtures or rapid WIP iteration.
+
 ## Notes
 
 - `.env.example` is committed with example URIs that won't resolve outside
   the original author's vault — that is intentional. Each contributor
   edits it to point at their own fixtures.
-- Neither file is wired into `make test` or CI; they are local-only
-  tools.
+- Nothing in `scripts/` is wired into `make test` or CI; everything here
+  is local-only.
