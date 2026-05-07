@@ -16,11 +16,14 @@ as cleanup.
 ```
 main.go                 # entry point; argument parsing, exit codes, signal & panic handling
 main_test.go            # end-to-end tests of run() with fake Runner/Confirmer
+run_subcommand_test.go  # tests for `opx run` (fake Runner/Confirmer/Spawner)
 internal/caller/        # parent process name (ppid → /proc/.../comm or `ps`)
+internal/envfile/       # dotenv-style NAME=VALUE parser used by `opx run --env-file`
 internal/oprunner/      # `op read` / `op signout` subprocess wrapper (Runner interface)
 internal/prompt/        # platform-native confirm dialog (osascript / zenity / /dev/tty)
 internal/prompt/assets/ # embedded white-on-transparent PNG (Go recolors at runtime); build/ has the Python source — `make icon`
 internal/shellquote/    # POSIX single-quote escaper for --env output
+internal/spawn/         # exec wrapper used by `opx run` (Spawner interface)
 internal/uri/           # `op://vault/item/field` syntax validator
 scripts/                # local-dev scaffolding: fixtures, smoke test, install helper
 Makefile                # build, test, test-integration, test-all, lint, clean, cross
@@ -85,23 +88,34 @@ These properties are the entire point of the project. Touching them needs
 deliberate intent.
 
 1. **Every successful read is preceded by a `Confirmer.Confirm` call.**
-   See `confirmAndRead` in `main.go`. In `--env` batch mode a single
-   Confirm covers every URI in the request; the dialog must show all of
-   them so the user can review the full set before approving.
+   See `confirmAndRead` and `runSubcommand` in `main.go`. In batch /
+   `--env` / `opx run` modes a single Confirm covers every URI in the
+   request; the dialog must show all of them so the user can review the
+   full set before approving. (`opx run` skips Confirm only when there
+   are zero `op://` references — it then behaves as a plain dotenv
+   loader.)
 2. **`Runner.ForgetSession` is called on every exit path** — success,
-   error, signal, panic. See the `defer` in `main()` and the unconditional
-   call in `readAndForget` in `main.go`. Batch mode does not change this:
-   one Forget per invocation, regardless of N.
+   error, signal, panic. See the `defer` in `main()` and the
+   unconditional calls in `readAndForget` and `runSubcommand`. Batch and
+   run modes do not change this: one Forget per invocation, regardless
+   of N. In `opx run`, ForgetSession runs **before** the child is
+   spawned so the child never inherits a usable op session.
 3. **`op://` URIs are validated before being passed to `op`.** All args
    run through `uri.IsOPURI` before the read. Validation happens before
    `Confirm`, so a malformed URI fails as a usage error without prompting.
-4. **Secrets only ever go to `os.Stdout`.** Don't log them, don't include
-   them in error messages, don't write them to temp files. In `--env`
-   mode they are shell-quoted via `internal/shellquote` before stdout,
-   but they still only leave the process via stdout.
-5. **Batch reads are atomic.** If any read in a `--env` batch fails,
-   nothing goes to stdout. Half-populated environments are a footgun,
-   not a feature.
+   In `opx run`, a value that starts with `op://` but fails validation
+   is rejected as a usage error rather than silently passed through as
+   a literal string.
+4. **Secrets leave the process only via the chosen sink.** In single
+   and `--env` modes that sink is `os.Stdout` (shell-quoted via
+   `internal/shellquote` in `--env` mode). In `opx run` the sink is the
+   child process's environment — secrets must never be written to opx's
+   own stdout in run mode. Don't log them, don't include them in error
+   messages, don't write them to temp files.
+5. **Batch reads are atomic.** If any read in a `--env` or `opx run`
+   batch fails, nothing reaches the sink — no stdout output, and in run
+   mode the child is not spawned at all. Half-populated environments
+   are a footgun, not a feature.
 
 If a change appears to remove or weaken any of these, call it out
 explicitly in the PR description rather than burying it in a refactor.
@@ -109,8 +123,9 @@ explicitly in the PR description rather than burying it in a refactor.
 ## Things to avoid
 
 - Adding flags or features beyond what the task asks for. The CLI is
-  deliberately small: two input modes (single positional URI and
-  repeatable `--env NAME=op://...` pairs), three exit codes.
+  deliberately small: three input modes (single positional URI;
+  repeatable `--env NAME=op://...` pairs; `opx run` with `--env-file`
+  / `--env` feeding a child command), four exit codes.
 - Adding nicknames, allowlists, config files, or any other indirection
   between the user-typed `op://` URI and the read. `opx` was scoped down
   to a pure security boundary around `op`; convenience layers were
