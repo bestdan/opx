@@ -9,6 +9,7 @@
 //
 //	opx <op://uri>
 //	opx --env NAME=<op://uri> [--env NAME=<op://uri> ...]
+//	opx run [--env-file=PATH ...] [--env NAME=<op://uri> ...] [--] CMD [ARGS...]
 package main
 
 import (
@@ -24,9 +25,11 @@ import (
 	"syscall"
 
 	"github.com/bestdan/opx/internal/caller"
+	"github.com/bestdan/opx/internal/envfile"
 	"github.com/bestdan/opx/internal/oprunner"
 	"github.com/bestdan/opx/internal/prompt"
 	"github.com/bestdan/opx/internal/shellquote"
+	"github.com/bestdan/opx/internal/spawn"
 	"github.com/bestdan/opx/internal/uri"
 )
 
@@ -74,6 +77,7 @@ func main() {
 	}
 	runner := oprunner.NewWithStderr(diag)
 	confirmer := prompt.NewWithStderr(diag)
+	spawner := spawn.New()
 
 	// Recover from panics so the session forget still runs. Panic output
 	// always goes to os.Stderr (not diag) — a panic is an invariant
@@ -87,7 +91,7 @@ func main() {
 			os.Exit(exitOpFail)
 		}
 	}()
-	os.Exit(run(args, runner, confirmer))
+	os.Exit(runWith(args, runner, confirmer, spawner))
 }
 
 // wantVersion reports whether --version / -V appears anywhere in args.
@@ -134,10 +138,21 @@ func extractVerbose(args []string) (verbose bool, rest []string) {
 
 // run is the main logic, separated from main() so it is testable.
 //
-// Usage output (parse errors, zero-args help) always prints to os.Stderr
-// regardless of verbosity — without it a new user has no signal that they
-// typoed a flag. Everything else routes through the diag writer.
+// Existing tests call run() with no spawner because they don't exercise the
+// `run` subcommand path. Tests that need to verify run-subcommand behavior
+// call runWith directly with a fake Spawner.
 func run(args []string, r oprunner.Runner, c prompt.Confirmer) int {
+	return runWith(args, r, c, spawn.New())
+}
+
+// runWith is run() with an injectable Spawner. Usage output (parse errors,
+// zero-args help) always prints to os.Stderr regardless of verbosity —
+// without it a new user has no signal that they typoed a flag. Everything
+// else routes through the diag writer.
+func runWith(args []string, r oprunner.Runner, c prompt.Confirmer, sp spawn.Spawner) int {
+	if len(args) > 0 && args[0] == "run" {
+		return runSubcommand(args[1:], r, c, sp)
+	}
 	bindings, envMode, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "usage error: %v\n", err)
@@ -340,9 +355,245 @@ func renderOutput(bindings []prompt.Binding, secrets [][]byte, envMode bool) []b
 	return buf.Bytes()
 }
 
+// runSubcommand implements `opx run`: a single-shot wrapper that resolves
+// op:// references from --env-file files and/or inline --env flags, exec's
+// the supplied command with those values in its environment, and forgets
+// the op session before the child starts.
+//
+// Security invariants preserved here:
+//   - Every op:// URI is validated before any user-visible prompt.
+//   - One Confirm call covers every op:// URI in the request.
+//   - ForgetSession runs on every exit path, before the child is spawned —
+//     the child must never inherit a usable op session.
+//   - Atomicity: if any read fails, the child is not spawned at all.
+//   - Secrets are never written to opx's stdout in run mode; they only
+//     reach the child via its environment.
+func runSubcommand(args []string, r oprunner.Runner, c prompt.Confirmer, sp spawn.Spawner) int {
+	bindings, literals, argv, err := parseRunArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "usage error: %v\n", err)
+		printUsage()
+		return exitUsage
+	}
+	if len(argv) == 0 {
+		fmt.Fprintln(os.Stderr, "usage error: opx run requires a command to execute")
+		printUsage()
+		return exitUsage
+	}
+
+	// Confirm covers every op:// URI in the request. If there are no op://
+	// references, skip the dialog — there is nothing to authorize, and
+	// `opx run --env-file=plain.env -- cmd` should behave like a thin
+	// dotenv loader. ForgetSession is still called so any leftover session
+	// from a prior `op` invocation is cleared.
+	if len(bindings) > 0 {
+		req := prompt.Request{Bindings: bindings, Caller: caller.Name()}
+		if err := c.Confirm(req); err != nil {
+			if errors.Is(err, prompt.ErrDenied) {
+				diagf("denied (%v)\n", err)
+				return exitDenied
+			}
+			diagf("confirm failed: %v\n", err)
+			return exitOpFail
+		}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	secrets := make([][]byte, len(bindings))
+	var readErr error
+	for i, b := range bindings {
+		s, err := r.ReadSecret(ctx, b.URI)
+		if err != nil {
+			readErr = err
+			break
+		}
+		secrets[i] = s
+	}
+
+	// Forget the session before the child starts so the child never sees an
+	// active op session, regardless of whether reads succeeded.
+	if ferr := r.ForgetSession(); ferr != nil {
+		diagf("warning: op signout failed: %v\n", ferr)
+	}
+
+	if ctx.Err() != nil {
+		diagf("interrupted\n")
+		return exitOpFail
+	}
+	if readErr != nil {
+		diagf("read failed: %v\n", readErr)
+		return exitOpFail
+	}
+
+	childEnv := buildChildEnv(os.Environ(), literals, bindings, secrets)
+	code, err := sp.Spawn(ctx, argv, childEnv)
+	if err != nil {
+		diagf("spawn failed: %v\n", err)
+		return exitOpFail
+	}
+	return code
+}
+
+// parseRunArgs parses the `opx run` argument list.
+//
+// Recognised flags:
+//   - --env-file=PATH (or --env-file PATH): repeatable, parsed in order.
+//   - --env NAME=VALUE (or --env=NAME=VALUE): repeatable, takes precedence
+//     over file entries with the same NAME.
+//   - --: explicit end-of-flags marker. Optional; flag parsing also stops
+//     at the first non-flag token to match `op run` UX.
+//
+// The remaining tokens are returned as argv (the command + its arguments).
+//
+// Values that match an op:// URI become bindings (will be resolved); other
+// values are returned as literal pass-throughs. Later assignments to the
+// same NAME overwrite earlier ones, with inline --env winning over files.
+func parseRunArgs(args []string) (bindings []prompt.Binding, literals []envfile.Entry, argv []string, err error) {
+	type pending struct {
+		name   string
+		value  string
+		source string // "--env" or file path, for error messages
+		line   int
+	}
+	var ordered []pending
+	addEntry := func(name, value, source string, line int) error {
+		if !envNameRE.MatchString(name) {
+			return fmt.Errorf("%s: %q is not a valid shell variable name", source, name)
+		}
+		ordered = append(ordered, pending{name: name, value: value, source: source, line: line})
+		return nil
+	}
+
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch {
+		case a == "--":
+			argv = append(argv, args[i+1:]...)
+			i = len(args)
+		case a == "--env-file":
+			if i+1 >= len(args) {
+				return nil, nil, nil, fmt.Errorf("--env-file requires a path")
+			}
+			i++
+			entries, perr := envfile.ParseFile(args[i])
+			if perr != nil {
+				return nil, nil, nil, perr
+			}
+			for _, e := range entries {
+				if aerr := addEntry(e.Name, e.Value, args[i], e.Line); aerr != nil {
+					return nil, nil, nil, aerr
+				}
+			}
+			i++
+		case strings.HasPrefix(a, "--env-file="):
+			path := strings.TrimPrefix(a, "--env-file=")
+			entries, perr := envfile.ParseFile(path)
+			if perr != nil {
+				return nil, nil, nil, perr
+			}
+			for _, e := range entries {
+				if aerr := addEntry(e.Name, e.Value, path, e.Line); aerr != nil {
+					return nil, nil, nil, aerr
+				}
+			}
+			i++
+		case a == "--env":
+			if i+1 >= len(args) {
+				return nil, nil, nil, fmt.Errorf("--env requires a NAME=VALUE argument")
+			}
+			i++
+			name, value, perr := splitEnvPair(args[i])
+			if perr != nil {
+				return nil, nil, nil, perr
+			}
+			if aerr := addEntry(name, value, "--env", 0); aerr != nil {
+				return nil, nil, nil, aerr
+			}
+			i++
+		case strings.HasPrefix(a, "--env="):
+			name, value, perr := splitEnvPair(strings.TrimPrefix(a, "--env="))
+			if perr != nil {
+				return nil, nil, nil, perr
+			}
+			if aerr := addEntry(name, value, "--env", 0); aerr != nil {
+				return nil, nil, nil, aerr
+			}
+			i++
+		case strings.HasPrefix(a, "-"):
+			return nil, nil, nil, fmt.Errorf("unknown flag %q", a)
+		default:
+			argv = append(argv, args[i:]...)
+			i = len(args)
+		}
+	}
+
+	// Last assignment wins. Walk in order and keep only the latest entry
+	// per name; this lets inline --env override file entries while still
+	// honouring an explicit later --env-file when one is supplied after.
+	latest := map[string]int{}
+	for idx, e := range ordered {
+		latest[e.name] = idx
+	}
+	for idx, e := range ordered {
+		if latest[e.name] != idx {
+			continue
+		}
+		if uri.IsOPURI(e.value) {
+			bindings = append(bindings, prompt.Binding{Name: e.name, URI: e.value})
+		} else {
+			// Reject obviously-malformed op:// URIs so a typo'd reference
+			// doesn't silently end up in the child as a literal string.
+			if strings.HasPrefix(e.value, "op://") {
+				return nil, nil, nil, fmt.Errorf("%s: %q is not a valid op:// URI", e.source, e.value)
+			}
+			literals = append(literals, envfile.Entry{Name: e.name, Value: e.value, Line: e.line})
+		}
+	}
+	return bindings, literals, argv, nil
+}
+
+// splitEnvPair splits "NAME=VALUE" without validating either half — the
+// caller decides whether the value needs to be a valid op:// URI.
+func splitEnvPair(pair string) (name, value string, err error) {
+	eq := strings.IndexByte(pair, '=')
+	if eq <= 0 {
+		return "", "", fmt.Errorf("--env: expected NAME=VALUE, got %q", pair)
+	}
+	return pair[:eq], pair[eq+1:], nil
+}
+
+// buildChildEnv layers the resolved values over the parent environment.
+// Order: parent env first (lowest priority), then literal pass-throughs,
+// then resolved secrets. Within each layer, the last assignment wins.
+func buildChildEnv(parent []string, literals []envfile.Entry, bindings []prompt.Binding, secrets [][]byte) []string {
+	env := map[string]string{}
+	for _, kv := range parent {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		env[kv[:eq]] = kv[eq+1:]
+	}
+	for _, e := range literals {
+		env[e.Name] = e.Value
+	}
+	for i, b := range bindings {
+		env[b.Name] = string(secrets[i])
+	}
+	out := make([]string, 0, len(env))
+	for k, v := range env {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage: opx [--verbose] <op://uri>")
 	fmt.Fprintln(os.Stderr, "       opx [--verbose] --env NAME=<op://uri> [--env NAME=<op://uri> ...]")
+	fmt.Fprintln(os.Stderr, "       opx [--verbose] run [--env-file=PATH ...] [--env NAME=<op://uri> ...] [--] CMD [ARGS...]")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  --verbose, -v    write diagnostics to stderr (default: silent)")
 	fmt.Fprintln(os.Stderr, "                   OPX_VERBOSE=1 in the environment is equivalent")
