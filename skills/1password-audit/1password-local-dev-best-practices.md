@@ -14,7 +14,7 @@ Recommendations for engineers using 1Password. Assumes the 1Password CLI (`op`) 
 - `service-payments-prod` — prod secrets for the payments service (CI/CD service account only)
 - `project-a` — a vault exclusively for project A keys
 
-**Service accounts** are for non-human access (AI agents, automation). They authenticate via a token (`OP_SERVICE_ACCOUNT_TOKEN=ops_xxx`) and have **immutable, scoped vault permissions** — they cannot access Personal/Employee vaults, cannot escalate privileges, and cannot create other service accounts. Grant read-only (`view_items`) unless writing is required. [1Password Service Accounts docs](https://developer.1password.com/docs/service-accounts/) · [Service account security model](https://developer.1password.com/docs/service-accounts/security/)
+**Service accounts** are for non-human access (AI agents, automation). They authenticate via a token (`OP_SERVICE_ACCOUNT_TOKEN=ops_xxx`) and have **immutable, scoped vault permissions** — they cannot access Personal/Employee vaults, cannot escalate privileges, and cannot create other service accounts. Grant read-only (`read_items`) unless writing is required. [1Password Service Accounts docs](https://developer.1password.com/docs/service-accounts/) · [Service account security model](https://developer.1password.com/docs/service-accounts/security/)
 
 **Supply chain protection:** A service account creator can only grant access to vaults _they themselves can access_, preventing privilege escalation via a compromised dependency. [1Password service account security](https://developer.1password.com/docs/service-accounts/security/)
 
@@ -81,8 +81,8 @@ Biometric unlock (Section 3) has a gap: after one successful approval, `op` cach
 
 [`opx`](https://github.com/bestdan/opx) closes that window. It is a small wrapper around `op read` that, on every invocation:
 
-1. Shows a platform-native dialog naming **which `op://` URI** is being read and **which process** is asking.
-2. Runs `op read`, triggering a fresh biometric prompt.
+1. Shows a platform-native dialog naming **which `op://` URI** is being read and **which process** is asking. This is unconditional — it is the trust boundary.
+2. Runs `op read`. Because step 3 tore down the session after the previous call, there is normally no session to reuse and this raises a fresh biometric prompt. (If some *other* `op` command — a `from_op` on `cd`, an `op run` — established a session in the meantime, that read reuses it; the dialog still fires, so the approval gate holds either way.)
 3. Runs `op signout --all` on every exit path — success, failure, denial, `SIGINT`, panic — so no cached session survives the call.
 
 Use it anywhere you would have typed `op read`:
@@ -92,7 +92,7 @@ Use it anywhere you would have typed `op read`:
 export GITHUB_TOKEN="$(opx 'op://dev-vault/github/token')"
 ```
 
-The secret goes to stdout; the dialog text, warnings, and errors go to stderr, so the value pipes cleanly. Exit codes: `0` = secret printed, `1` = `op` failed / user denied / interrupted, `2` = usage error.
+The secret goes to stdout; the dialog text, warnings, and errors go to stderr, so the value pipes cleanly. Exit codes: `0` = secret printed, `1` = `op` failed or the read was interrupted, `2` = usage error, `3` = you denied the dialog, it timed out, or there was no GUI/TTY to show it in.
 
 To load several secrets under a single approval, use repeatable `--env NAME=op://...` pairs and `eval` the output. The dialog lists every URI and the variable it binds, and the batch is atomic — if any read fails, nothing is written to stdout:
 
@@ -127,15 +127,18 @@ Install direnv and the direnv-1password plugin:
 
 ```bash
 brew install direnv
-git clone https://github.com/tmatilai/direnv-1password ~/.config/direnv/lib/direnv-1password
+mkdir -p ~/.config/direnv/lib
+curl -sfLo ~/.config/direnv/lib/1password.sh \
+    https://raw.githubusercontent.com/tmatilai/direnv-1password/main/1password.sh
 ```
+
+`direnv` auto-loads every `~/.config/direnv/lib/*.sh`, so no `source` line is needed in `.envrc`.
 
 `direnv-1password` is a community-maintained plugin (not official 1Password). Check the repo's commit history before adopting it as a team standard.
 
 In your project `.envrc` (committed to Git):
 
 ```bash
-source ~/.config/direnv/lib/direnv-1password
 # Specify --account to avoid accidentally pulling from a personal vault
 from_op --account your-team.1password.com DATABASE_URL=op://dev-vault/postgres/url
 from_op --account your-team.1password.com REDIS_URL=op://dev-vault/redis/connection
@@ -143,7 +146,7 @@ from_op --account your-team.1password.com REDIS_URL=op://dev-vault/redis/connect
 
 Secrets load on `cd`, unload on `cd ..`. No shell history exposure.
 
-Note the trade-off against Section 4: `from_op` calls `op read` under the hood, so a `cd` into the directory resolves secrets silently, using whatever cached session exists. That is the point — it is automatic — but it means the biometric gate does not fire per read and a session may be left cached. If you want every read explicitly approved and the session torn down afterwards, drop `direnv` for that project and load the values on demand instead:
+Note the trade-off against Section 4: `from_op` pipes its references to `op inject` under the hood, so a `cd` into the directory resolves secrets silently, using whatever cached session exists — and leaving one cached for anything else running as you. That is the point — it is automatic — but it means the biometric gate does not fire per read and a session may be left cached. If you want every read explicitly approved and the session torn down afterwards, drop `direnv` for that project and load the values on demand instead:
 
 ```bash
 eval "$(opx \
@@ -268,7 +271,7 @@ The 1Password model limits blast radius at multiple layers:
 | Scoped service accounts    | Compromised token pivoting to other vaults       | Token only reaches its assigned vault; can't escalate      |
 | Secret references in files | Compromised dependency reading `.env`            | `op://` refs are useless without CLI + auth                |
 | Shell history protection   | `export SECRET=...` captured in history          | `direnv` + `from_op` never writes secrets to shell         |
-| Subprocess isolation       | Parent shell or `/proc` inspection of child env  | `op run` secrets visible only to child process, not parent |
+| Subprocess scoping         | Secrets persisting in history, dotfiles, or the shell env | `op run` scopes values to one subprocess — never on disk, never inherited by the shell. A same-uid process can still read `/proc/<pid>/environ`; the boundary is persistence, not process isolation. |
 | Pre-commit scanning        | Developer accidentally commits a resolved secret | `detect-secrets` blocks the commit before it reaches git   |
 
 **For AI coding agents specifically** (Claude, Cursor, Copilot):

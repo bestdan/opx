@@ -11,7 +11,7 @@ disallowed-tools:
   - Edit
   - Write
   - NotebookEdit
-version: 1.1.0
+version: 1.1.1
 ---
 
 # 1Password Developer Onboarding
@@ -109,7 +109,7 @@ brew install 1password-cli
 
 ### Install `opx`
 
-Reads you run by hand go through [`opx`](https://github.com/bestdan/opx), not `op read`. `opx` shows a dialog naming the URI and the process asking for it, forces a fresh biometric prompt, and runs `op signout --all` afterwards so no cached session is left behind for another process to reuse.
+Reads you run by hand go through [`opx`](https://github.com/bestdan/opx), not `op read`. `opx` shows a dialog naming the URI and the process asking for it on every invocation, normally raises a fresh biometric prompt (it leaves no session cached between calls), and runs `op signout --all` afterwards so no cached session is left behind for another process to reuse.
 
 ```bash
 git clone https://github.com/bestdan/opx.git
@@ -132,7 +132,7 @@ You should see `{account}` in the output. If not, open 1Password > Settings > De
 
 ## Step 2 — Sign in
 
-**If you have the 1Password desktop app installed and CLI integration enabled (Step 1):** you don't need to do anything here. The CLI uses the desktop app's session and prompts for Touch ID on each command. Set `OP_ACCOUNT` so commands without an explicit `--account` flag pick the right account:
+**If you have the 1Password desktop app installed and CLI integration enabled (Step 1):** you don't need to do anything here. The CLI uses the desktop app's session. The first command in an inactivity window prompts for Touch ID; later commands reuse the cached session until it expires (~10 minutes idle) — which is why interactive reads go through `opx` (Step 1). Set `OP_ACCOUNT` so commands without an explicit `--account` flag pick the right account:
 
 ```bash
 # Add to ~/.zshrc or ~/.bashrc
@@ -277,7 +277,7 @@ pre-commit run --all-files
 OP_DEBUG=1 op run --account {account} --env-file=.env.secrets -- echo ok
 ```
 
-**`opx` exits 1 with "denied"**
+**`opx` exits 3 with "denied"**
 → You dismissed the confirmation dialog, or there was no GUI/TTY to show it in. Run `opx` from an interactive terminal on your own machine; it is not usable over a headless SSH session or from a daemon.
 
 **`opx` reads from the wrong account**

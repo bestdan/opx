@@ -8,7 +8,7 @@ disallowed-tools:
   - Edit
   - Write
   - NotebookEdit
-version: 1.1.0
+version: 1.1.1
 ---
 
 # 1Password Vault Scaffold
@@ -32,7 +32,7 @@ Parse `$ARGUMENTS` positionally:
    - `team` — shared dev credentials for an eng team
    - `ai-agent` — credentials scoped specifically for an AI coding agent session
 
-   If not provided, infer from the name: names containing `team` → `team`; names containing `ai`, `agent`, `claude`, `cursor`, `copilot` → `ai-agent`; everything else → `service`.
+   If not provided, infer from the name — matching whole hyphen- or underscore-separated tokens, never substrings: a token `team` → `team`; a token `ai`, `agent`, `agents`, `claude`, `cursor`, or `copilot` → `ai-agent`; everything else → `service`. (Substring matching would classify `mail`, `retail`, and `maintenance` as AI agents.)
 
 3. **Account** (optional, third arg) — the 1Password account domain (e.g. `your-team.1password.com`). If not provided, use `AskUserQuestion` to ask:
 
@@ -154,6 +154,8 @@ op item create \
   '{field-name}[concealed]=' \
 ```
 
+The trailing `\` is a line continuation *between* arguments — omit it on the last field line so the emitted command is complete when pasted.
+
 Fields are created empty. Open each item in the 1Password app and paste the actual secret values into the matching fields. (Do not set values from the command line — they end up in shell history.)
 
 ---
@@ -192,7 +194,7 @@ For one-off reads at a terminal — pasting a token into a curl call, checking t
 opx 'op://{dev-vault-name}/{item-name}/{field-name}'
 ```
 
-`opx` names the URI and the calling process in a confirmation dialog, forces a fresh biometric prompt, and runs `op signout --all` on exit, so no cached session is left for another local process to reuse. It has no `--account` flag; export `OP_ACCOUNT={account}` in your shell profile so it targets the right account.
+`opx` names the URI and the calling process in a confirmation dialog on every invocation, normally raises a fresh biometric prompt (no session is cached, because it signs out after each call), and runs `op signout --all` on exit, so no cached session is left for another local process to reuse. It has no `--account` flag; export `OP_ACCOUNT={account}` in your shell profile so it targets the right account.
 
 ---
 
@@ -203,7 +205,7 @@ Service accounts authenticate non-interactively (no biometric). Create one scope
 
 ```bash
 op service-account create "{name}-ci" \
-  --vault {prod-vault-name}:view_items \
+  --vault {prod-vault-name}:read_items \
   --account {account}
 ```
 
@@ -222,7 +224,7 @@ op run --env-file=.env.secrets -- <your-ci-command>
 
 ```bash
 op service-account create "{name}-agent" \
-  --vault {agent-vault-name}:view_items \
+  --vault {agent-vault-name}:read_items \
   --account {account}
 ```
 
@@ -333,8 +335,8 @@ After the runbook, add a short "Next steps" summary:
 ## Rules
 
 - **No files written.** Output is a runbook only. The user decides what to execute.
-- **--account everywhere.** Every `op` command in the output must include `--account {account}`. Never generate a command without it.
-- **Read-only service accounts.** Always scope CI and agent service accounts to `view_items` only, unless the user explicitly says write access is needed.
+- **--account everywhere.** Every `op` command in the output must include `--account {account}`, with two exceptions: `opx` has no such flag (it follows the `OP_ACCOUNT` export), and commands running under a service-account token (`OP_SERVICE_ACCOUNT_TOKEN=... op run ...`) don't need it — the token is already scoped.
+- **Read-only service accounts.** Always scope CI and agent service accounts to `read_items` only, unless the user explicitly says write access is needed. (`read_items` is the service-account vocabulary; `view_items` belongs to `op vault user grant`.)
 - **Never generate fake secret values.** Placeholder `op://` references use the derived item/field names — never invent example values that look like real credentials.
 - **`opx` for reads, `op run` for launches.** Any ad-hoc read in the runbook uses `opx`, never `op read`. Do not replace `op run` or `op inject` with `opx --env` — those scope secrets to a subprocess or a gitignored file; `opx --env` puts them in the interactive shell, which is weaker.
 - **Vault names follow the convention.** `service-{name}-{env}`, `team-{name}-dev`, `ai-agents`. Do not deviate unless the user asks.

@@ -72,7 +72,7 @@ Go 1.24+ is required (see `go.mod`).
   `errors.As`. `prompt.ErrDenied` is the canonical sentinel for user
   denial — return it (or wrap it) rather than inventing parallel errors.
 - **Exit codes are centralized** in `main.go` (`exitSuccess`, `exitOpFail`,
-  `exitUsage`). Reuse them; don't introduce ad-hoc integers.
+  `exitUsage`, `exitDenied`). Reuse them; don't introduce ad-hoc integers.
 - **No `fmt.Println` to stdout** outside of writing the secret bytes —
   `os.Stdout` is the secret channel. Diagnostics go to `os.Stderr`.
 
@@ -120,7 +120,7 @@ explicitly in the PR description rather than burying it in a refactor.
 
 - Adding flags or features beyond what the task asks for. The CLI is
   deliberately small: two input modes (single positional URI and
-  repeatable `--env NAME=op://...` pairs), three exit codes.
+  repeatable `--env NAME=op://...` pairs), four exit codes.
 - Adding nicknames, allowlists, config files, or any other indirection
   between the user-typed `op://` URI and the read. `opx` was scoped down
   to a pure security boundary around `op`; convenience layers were

@@ -14,7 +14,7 @@ disallowed-tools:
   - Edit
   - Write
   - NotebookEdit
-version: 1.1.0
+version: 1.1.1
 ---
 
 # 1Password Secrets Audit
@@ -80,9 +80,11 @@ Read the file. For each line that is not a comment and not blank:
 
 A value "looks like a real secret" if it matches any of:
 
-- A known secret prefix: `sk_live_`, `sk_test_`, `rk_live_`, `pk_live_`, `pk_test_`, `ghp_`, `gho_`, `ghs_`, `glpat-`, `AKIA`, `xoxb-`, `xoxp-`, `xoxa-`, `SG.`, `AC[a-z0-9]{32}`, `EAA` (Facebook token pattern)
+- A known secret prefix: `sk_live_`, `sk_test_`, `rk_live_`, `ghp_`, `gho_`, `ghs_`, `glpat-`, `AKIA`, `xoxb-`, `xoxp-`, `xoxa-`, `SG.`, `EAA` (Facebook token pattern)
 - An alphanumeric string of 32+ characters with no spaces (entropy heuristic — likely a key or token)
 - A connection string containing a password component: `://[^:]+:[^@]+@`
+
+Do **not** FAIL on values that only look secret-shaped but are public by design: Stripe publishable keys (`pk_live_`, `pk_test_`), Twilio Account SIDs (`AC…`), AWS access key *IDs* on their own, and OAuth client IDs. These are meant to be shipped to clients. If one is present alongside its real counterpart (`STRIPE_SECRET_KEY`, `TWILIO_AUTH_TOKEN`, `AWS_SECRET_ACCESS_KEY`), report only the counterpart.
 
 If a file is named `.env.secrets` and ALL values are `op://` refs, note it as correctly structured.
 
@@ -166,12 +168,12 @@ Run `git ls-files` to get all tracked files. For each tracked file, check if a c
 
 ### Check 8: Interactive secret reads go through opx
 
-`opx` wraps `op read` so every read shows a dialog naming the URI and the calling process, triggers a fresh biometric prompt, and runs `op signout --all` afterwards. Raw `op read` reuses whatever session is already cached, so any other process running as the developer can read secrets silently in that window. See section 4 of the best-practices reference.
+`opx` wraps `op read` so every read shows a dialog naming the URI and the calling process, normally raises a fresh biometric prompt (it leaves no session cached between calls), and runs `op signout --all` afterwards. Raw `op read` reuses whatever session is already cached, so any other process running as the developer can read secrets silently in that window. See section 4 of the best-practices reference.
 
 Scan dev scripts, `Makefile`, `justfile`, `.envrc`, `README.md`, and any `docs/` onboarding files (joining line continuations as in Check 4):
 
 - Any invocation of `op read` → **WARN** with file and line, recommending `opx '<uri>'` in its place. Exception: if the command is inside a CI config, a Dockerfile, or a block clearly labelled as CI/headless, mark it **N/A** for that occurrence — `opx` requires a GUI dialog or TTY and is denied without one.
-- Any `from_op` call in `.envrc` → **WARN** (informational): `from_op` resolves via `op read` on `cd`, so reads are not individually approved. Note the trade-off; do not treat direnv usage as a failure.
+- Any `from_op` call in `.envrc` → **WARN** (informational): `from_op` resolves via `op inject` on `cd`, so reads are not individually approved and a session is left cached. Note the trade-off; do not treat direnv usage as a failure.
 - If `opx` invocations are present anywhere in the project, check whether `OP_ACCOUNT` is exported in `.envrc` or documented in the README. `opx` has no `--account` flag, so a multi-account developer without `OP_ACCOUNT` resolves against the wrong account. Missing → **WARN**.
 - Run `command -v opx` to check whether the binary is installed locally. Not installed → note it in the report as an environment finding, not a project failure.
 

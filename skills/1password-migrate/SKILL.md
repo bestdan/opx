@@ -12,7 +12,7 @@ disallowed-tools:
   - Edit
   - Write
   - NotebookEdit
-version: 1.1.0
+version: 1.1.1
 ---
 
 # 1Password Migration Runbook
@@ -97,9 +97,9 @@ For each key=value pair collected in Phase 2, derive a 1Password item name and f
 - `OPENAI_API_KEY` → item: `openai`, field: `api-key`
 
 **Fallback pattern (anything not matched above):**
-Split the key on `_`. The last segment becomes the field name (lowercased, underscores → hyphens). Everything before it becomes the item name (lowercased, underscores → hyphens).
-- `ACME_WEBHOOK_SECRET` → item: `acme-webhook`, field: `secret`
-- `PAYMENTS_API_KEY` → item: `payments`, field: `api-key`
+Strip a known compound suffix if the key ends in one — `API_KEY`, `SECRET_KEY`, `SECRET_ACCESS_KEY`, `ACCESS_KEY`, `ACCESS_KEY_ID`, `AUTH_TOKEN`, `BOT_TOKEN`, `WRITE_KEY`, `PRIVATE_KEY`, `CLIENT_ID`, `CLIENT_SECRET`, `ACCOUNT_SID` — and that suffix becomes the field name. Otherwise split on `_` and the last segment becomes the field name. Either way the remainder becomes the item name. Both are lowercased with underscores → hyphens.
+- `PAYMENTS_API_KEY` → compound suffix `API_KEY` → item: `payments`, field: `api-key`
+- `ACME_WEBHOOK_SECRET` → no compound suffix → item: `acme-webhook`, field: `secret`
 - `FOO` (no underscore) → item: `foo`, field: `value`
 
 Group keys that share the same derived item name — they will be created as a single `op item create` call with multiple fields.
@@ -142,6 +142,8 @@ op item create \
   '{field-name}[concealed]=' \
 ```
 
+The trailing `\` is a line continuation *between* arguments — omit it on the last field line so the emitted command is complete when pasted.
+
 Fields are created empty. Open each item in the 1Password app and paste the actual secret values into the matching fields. (Do not set values from the command line — they end up in shell history.)
 
 ---
@@ -159,7 +161,11 @@ Create `.env.secrets` in your project root:
 ```
 
 {If multiple env-specific input files were migrated (e.g. `.env.development` and `.env.production`):}
-Emit one secrets file per input, preserving the environment suffix so the split is preserved at runtime. For each input file `{original-file}` (e.g. `.env.development`), produce `{original-file}.secrets` (e.g. `.env.development.secrets`):
+The same variable name in two environments holds two different values, so the `op://` references must differ too — otherwise `.env.development.secrets` and `.env.production.secrets` both point at one item that can only hold one value. Use `AskUserQuestion` to ask whether to separate by vault (preferred — it lets prod access be granted narrowly, per Section 1 of the best-practices reference) or by item name:
+
+> Your `.env` files are split by environment. Separate the 1Password references by vault (`{vault}-dev` / `{vault}-prod` — recommended, lets you restrict prod access) or by item name (`postgres-development` / `postgres-production`, one vault)?
+
+Apply that choice to every reference and show it in the migration table. Then emit one secrets file per input, preserving the environment suffix so the split is preserved at runtime. For each input file `{original-file}` (e.g. `.env.development`), produce `{original-file}.secrets` (e.g. `.env.development.secrets`):
 
 ```env
 # {original-file}.secrets
@@ -211,7 +217,7 @@ dev:
 	op run --account {account} --env-file=.env.secrets -- <current-dev-command>
 ```
 
-For one-off reads at a terminal, use [`opx`](https://github.com/bestdan/opx) instead of `op read` — it names the URI and the calling process in a dialog, forces a fresh biometric prompt, and tears down the `op` session afterwards:
+For one-off reads at a terminal, use [`opx`](https://github.com/bestdan/opx) instead of `op read` — it names the URI and the calling process in a dialog on every invocation, normally raises a fresh biometric prompt, and tears down the `op` session afterwards:
 
 ```bash
 opx 'op://{vault}/{item}/{field}'
@@ -286,6 +292,6 @@ If any of the migrated secrets appear in `git log`, treat them as compromised:
 - **Never echo secret values.** The migration table maps variable names to `op://` references only — never include the actual values found in `.env`.
 - **Preserve order.** The `.env.secrets` template should list variables in the same order as the original `.env` file to make diffing easy.
 - **Warn on committed secrets.** If any `.env` file found during scan is tracked in git (`git ls-files` would show it), add a prominent warning at the top of the runbook that the secrets may already be in git history and need rotation.
-- **--account everywhere.** Every `op` command in the output must include `--account {account}`.
+- **--account everywhere.** Every `op` command in the output must include `--account {account}`, with two exceptions: `opx` has no such flag (it follows the `OP_ACCOUNT` export), and commands running under a service-account token don't need it — the token is already scoped.
 - **`opx` for reads, `op run` for launches.** Recommend `opx` only where the runbook would otherwise use `op read`. Never swap `op run` for `opx --env` — `op run` scopes secrets to the subprocess, `opx --env` puts them in the shell.
 - **Group items.** Multiple variables that map to the same item (e.g. `STRIPE_SECRET_KEY` and `STRIPE_PUBLISHABLE_KEY` both → item `stripe`) must appear in a single `op item create` call, not two separate calls.

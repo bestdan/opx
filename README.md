@@ -129,11 +129,12 @@ extra reads in.
 | Code | Meaning                                             |
 |------|-----------------------------------------------------|
 | 0    | Secret printed to stdout                            |
-| 1    | `op` failed, user denied the prompt, or interrupted |
+| 1    | `op` failed or the read was interrupted             |
 | 2    | Usage error (no args, malformed URI)                |
+| 3    | Denied — dialog dismissed, timed out, or no GUI/TTY |
 
-All non-usage failures collapse to exit 1 by design: callers should treat
-them identically (no secret on stdout) and read `stderr` for the reason.
+Exit 3 is the user-intent path; every other failure collapses to exit 1.
+In all non-zero cases nothing reaches stdout — read `stderr` for the reason.
 
 ## Common gotchas
 
@@ -159,9 +160,9 @@ launching apps, and share a background doc,
 | Skill | What it does |
 |---|---|
 | `/1password-audit [path]` | Reports on hardcoded secrets, gitignore coverage, `op run` in dev scripts, `--account` safety, `detect-secrets`, and raw `op read` that should be `opx` |
-| `/1password-scaffold <name> [service\|team\|ai-agent]` | Generates vault creation, service account scoping, `.env.secrets`, and `.gitignore` setup |
-| `/1password-migrate [path]` | Maps an existing `.env` to `op://` references and produces the migration runbook |
-| `/1password-onboard [path]` | Discovers required vaults and produces an install / sign-in / access-request runbook |
+| `/1password-scaffold <name> [service\|team\|ai-agent] [account]` | Generates vault creation, service account scoping, `.env.secrets`, and `.gitignore` setup |
+| `/1password-migrate [path] [account]` | Maps an existing `.env` to `op://` references and produces the migration runbook |
+| `/1password-onboard [path] [account]` | Discovers required vaults and produces an install / sign-in / access-request runbook |
 
 All four are read-only: they print a runbook, they do not write files.
 
