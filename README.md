@@ -147,6 +147,31 @@ them identically (no secret on stdout) and read `stderr` for the reason.
   first run from Finder will be blocked. Either run it from a terminal or
   remove the quarantine attribute: `xattr -d com.apple.quarantine ./opx`.
 
+## Claude Code skills
+
+This repo doubles as a Claude Code plugin. Four skills under [`skills/`](skills/)
+cover the workflows around the binary — auditing a project's secret
+hygiene, scaffolding a vault, migrating a plaintext `.env`, and onboarding
+a developer. They recommend `opx` for interactive reads and `op run` for
+launching apps, and share a background doc,
+[`1password-local-dev-best-practices.md`](skills/1password-audit/1password-local-dev-best-practices.md).
+
+| Skill | What it does |
+|---|---|
+| `/1password-audit [path]` | Reports on hardcoded secrets, gitignore coverage, `op run` in dev scripts, `--account` safety, `detect-secrets`, and raw `op read` that should be `opx` |
+| `/1password-scaffold <name> [service\|team\|ai-agent]` | Generates vault creation, service account scoping, `.env.secrets`, and `.gitignore` setup |
+| `/1password-migrate [path]` | Maps an existing `.env` to `op://` references and produces the migration runbook |
+| `/1password-onboard [path]` | Discovers required vaults and produces an install / sign-in / access-request runbook |
+
+All four are read-only: they print a runbook, they do not write files.
+
+Install:
+
+```sh
+claude plugin marketplace add bestdan/opx
+claude plugin install opx@opx
+```
+
 ## Contributing
 
 See [`dev_docs/development.md`](dev_docs/development.md) for build,

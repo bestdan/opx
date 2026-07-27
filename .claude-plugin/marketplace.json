@@ -1,0 +1,28 @@
+{
+  "name": "opx",
+  "description": "1Password secret-hygiene skills for Claude Code, shipped alongside the opx CLI.",
+  "owner": {
+    "name": "Daniel Egan"
+  },
+  "plugins": [
+    {
+      "name": "opx",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/bestdan/opx.git"
+      },
+      "description": "Claude Code skills for 1Password secret hygiene, built around opx: audit a project's secret management, scaffold a new vault, migrate a plaintext .env to op:// references, and onboard a developer.",
+      "version": "0.1.0",
+      "keywords": [
+        "1password",
+        "secrets",
+        "op",
+        "opx",
+        "security",
+        "audit",
+        "onboarding"
+      ],
+      "license": "MIT"
+    }
+  ]
+}

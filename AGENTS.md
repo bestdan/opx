@@ -24,7 +24,17 @@ internal/shellquote/    # POSIX single-quote escaper for --env output
 internal/uri/           # `op://vault/item/field` syntax validator
 scripts/                # local-dev scaffolding: fixtures, smoke test, install helper
 Makefile                # build, test, test-integration, test-all, lint, clean, cross
+skills/                 # Claude Code skills shipped with the repo (1password-audit/migrate/onboard/scaffold)
+.claude-plugin/         # plugin + marketplace manifests making this repo installable as a Claude Code plugin
 ```
+
+`skills/` is documentation, not code — no Go build or test touches it. Two
+things to keep consistent when editing it: the skills recommend `opx` only
+where raw `op read` would have been used (`op run` and `op inject` stay as
+they are, since they scope secrets to a subprocess or a gitignored file),
+and they must not claim `opx` accepts `--account` — it doesn't, it follows
+`OP_ACCOUNT`. Bump `version` in the skill frontmatter and in both
+`.claude-plugin/*.json` manifests when the content changes materially.
 
 All packages are under `internal/` and importable only from this module.
 Add new packages there unless there is a clear reason to expose them.
