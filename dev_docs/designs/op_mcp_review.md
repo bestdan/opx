@@ -37,7 +37,7 @@ The two tools answer different questions.
 
 | | MCP server | `opx` |
 | --- | --- | --- |
-| Who receives the value | nobody — injected into a process | the caller, on stdout |
+| Who receives the value | target process, via a mounted `.env` — never returned to the MCP client or model | the caller, on stdout |
 | Target workflow | agent wires up an app's environment | a human needs the secret in hand |
 | Reach | clients speaking MCP | anything that would have run `op read` |
 | Session posture | per-interaction desktop prompt | `op signout --all` every invocation |
@@ -72,8 +72,9 @@ Nothing in `main.go` or `internal/`. The adoption surface is `skills/`, where
 the recommendations are now one generation behind.
 
 **1. Offer a mounted Environment as the preferred local-dev path.**
-`1password-migrate` (Step 2) and `1password-scaffold` (Step 3) both terminate
-at a committed `.env.secrets` of `op://` references plus `op run --env-file`.
+`1password-migrate` (Steps 2 and 4) and `1password-scaffold` (Steps 3 and 4)
+both terminate at a committed `.env.secrets` of `op://` references plus
+`op run --env-file` wired into the dev script.
 A mounted Environment `.env` reaches the same place with one less artifact to
 maintain and no reference file to keep in sync. This does not collide with the
 skills' existing rule — `opx` is only ever recommended where raw `op read` was
@@ -81,10 +82,12 @@ the alternative, and this is not that. Keep `op run --env-file` documented as
 the fallback for anyone not on the desktop app, on mobile, or unwilling to run
 a beta.
 
-**2. Teach `1password-audit` to recognise it.** A project on a mounted
+**2. Teach `1password-audit` to recognize it.** A project on a mounted
 Environment is in at least as good a shape as one on `.env.secrets` +
-`op run`, and Check 1 and Check 3 will currently mis-grade it — there is no
-`.env.secrets` to find and possibly no `op run` in the dev script.
+`op run`, and Checks 1, 2, and 3 will currently mis-grade it — there is no
+`.env.secrets` to find and possibly no `op run` in the dev script. Worse, if
+the mount lands in-tree the audit would *read* it, pulling live secrets into
+the agent's context. See task 07.
 
 **3. Do not go deeper while it is beta.** No SDK integration, no assumption
 that the desktop app is present, no removal of the `op run` path.

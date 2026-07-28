@@ -6,15 +6,25 @@ Environments MCP server).
 
 ## How it is
 
-`1password-migrate` (Step 2) and `1password-scaffold` (Step 3) both land the
-reader on the same shape: a committed `.env.secrets` holding `op://`
+`1password-migrate` (Steps 2 and 4) and `1password-scaffold` (Steps 3 and 4)
+both land the reader on the same shape: a committed `.env.secrets` holding `op://`
 references, plus `op run --account … --env-file=.env.secrets -- <cmd>` wired
 into the dev script. That is correct and remains the safe default.
 
 It is now one generation behind. 1Password Environments can mount a local
 `.env` directly from the Environment, with no plaintext on disk and no
-reference file to keep in sync against the vault. Same guarantee, one fewer
-artifact.
+reference file to keep in sync against the vault. Same no-plaintext-on-disk
+property, one fewer artifact.
+
+**Open question, to settle before either skill promotes the mounted path to
+preferred:** the two are not obviously equivalent on *process scoping*.
+`op run --env-file` injects into a single subprocess per invocation and the
+values die with it. A mounted `.env` is a path — readable by anything on the
+machine that can open it, for as long as the mount is live. The source says
+only that credentials are not written to disk; it says nothing about who can
+read the mount or how long it persists. Establish that before recommending it,
+and if the scoping really is weaker, say so in the skills rather than burying
+it (AGENTS.md requires trust-boundary changes to be called out explicitly).
 
 ## How it should be
 
