@@ -124,6 +124,52 @@ interruptions (one approval per batch). The user still types every URI
 and every variable name themselves, so a malicious caller can't sneak
 extra reads in.
 
+### `opx run` — wrap a command with secrets from an env file
+
+If you already keep secrets in a dotenv-style file, `opx run` reads it,
+resolves any `op://` references with a single biometric approval, and
+exec's your command with those values in its environment — the same
+shape as `op run`, but with opx's per-call dialog and forced session
+teardown:
+
+```sh
+# .env.secrets
+SUPABASE_URL=op://finplan/Supabase/website
+SUPABASE_SERVICE_ROLE_KEY=op://finplan/Supabase/service_role_key
+LOG_LEVEL=info        # non-op:// values pass through verbatim
+```
+
+```sh
+opx run --env-file=.env.secrets -- uv run pytest
+```
+
+Flags:
+
+- `--env-file=PATH` — repeatable. Lines are `NAME=VALUE`; blank lines
+  and `#` comments are ignored; matching surrounding quotes are
+  stripped. A leading `export ` is tolerated.
+- `--env NAME=VALUE` — repeatable. Same shape as the top-level batch
+  mode and overrides any same-named entry from a file.
+- `--` — optional separator; flag parsing also stops at the first
+  non-flag token, matching `op run`'s UX.
+
+Behavior:
+
+- One confirmation dialog covers every `op://` URI in the request.
+- The `op` session is forgotten **before** the child is spawned, so the
+  child never inherits a usable session. If that signout fails, the
+  child is not spawned at all.
+- Secrets are stripped of the trailing newline `op read` emits, so a
+  token or connection string arrives in the child's environment exactly
+  as stored.
+- `Ctrl-C` reaches the child directly; opx does not kill it, so a child
+  that traps `SIGINT` can finish its own cleanup.
+- Reads are atomic: if any URI fails to resolve, the child is not
+  spawned and nothing is written.
+- Secrets reach the child only via its environment — they are never
+  printed to opx's stdout in run mode.
+- The child's exit code is propagated.
+
 ### Exit codes
 
 | Code | Meaning                                             |
