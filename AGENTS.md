@@ -109,7 +109,11 @@ deliberate intent.
    unconditional calls in `readAndForget` and `runSubcommand`. Batch and
    run modes do not change this: one Forget per invocation, regardless
    of N. In `opx run`, ForgetSession runs **before** the child is
-   spawned so the child never inherits a usable op session.
+   spawned so the child never inherits a usable op session — and a
+   ForgetSession *failure* there is fatal: the child is not spawned.
+   Run mode fails closed because it hands control to a potentially
+   long-lived child; the other modes exit immediately, so they only
+   warn.
 3. **`op://` URIs are validated before being passed to `op`.** All args
    run through `uri.IsOPURI` before the read. Validation happens before
    `Confirm`, so a malformed URI fails as a usage error without prompting.

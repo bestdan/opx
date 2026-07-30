@@ -337,6 +337,40 @@ func TestRunSubcommand_SecretValueWithSpecialChars(t *testing.T) {
 	}
 }
 
+// `op read` newline-terminates its output. That trailing byte must not reach
+// the child — an API key or connection string ending in "\n" is rejected by
+// most consumers, and unlike `$(opx op://...)` there is no shell to strip it.
+func TestRunSubcommand_StripsOpReadTrailingNewline(t *testing.T) {
+	envPath := writeEnvFile(t, "TOKEN=op://V/I/f\n")
+	fr := &fakeRunner{secrets: map[string][]byte{"op://V/I/f": []byte("sk-abc123\n")}}
+	fs := &fakeSpawner{}
+
+	code := runWith([]string{"run", "--env-file=" + envPath, "--", "echo"}, fr, allow(), fs)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d, want %d", code, exitSuccess)
+	}
+	if v, _ := envValue(fs.lastEnv, "TOKEN"); v != "sk-abc123" {
+		t.Errorf("TOKEN = %q, want %q (op's trailing newline must be stripped)", v, "sk-abc123")
+	}
+}
+
+// Only ONE trailing newline is op's own — a genuinely multiline secret (PEM
+// key, certificate) keeps its final newline.
+func TestRunSubcommand_KeepsMultilineSecretFinalNewline(t *testing.T) {
+	envPath := writeEnvFile(t, "KEY=op://V/I/f\n")
+	fr := &fakeRunner{secrets: map[string][]byte{"op://V/I/f": []byte("-----BEGIN-----\nbody\n-----END-----\n\n")}}
+	fs := &fakeSpawner{}
+
+	code := runWith([]string{"run", "--env-file=" + envPath, "--", "echo"}, fr, allow(), fs)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d, want %d", code, exitSuccess)
+	}
+	want := "-----BEGIN-----\nbody\n-----END-----\n"
+	if v, _ := envValue(fs.lastEnv, "KEY"); v != want {
+		t.Errorf("KEY = %q, want %q", v, want)
+	}
+}
+
 func TestRunSubcommand_DoubleDashLetsChildKeepFlags(t *testing.T) {
 	envPath := writeEnvFile(t, "FOO=op://V/I/f\n")
 	fr := &fakeRunner{secrets: map[string][]byte{"op://V/I/f": []byte("v")}}
@@ -354,3 +388,25 @@ func TestRunSubcommand_DoubleDashLetsChildKeepFlags(t *testing.T) {
 // guard against accidentally regressing: a spawner type assertion guarantees
 // the fake satisfies the interface signature used in main.go.
 var _ spawn.Spawner = (*fakeSpawner)(nil)
+
+// Run mode hands control to a potentially long-lived child, so a failed
+// signout must abort rather than spawn a child holding a live op session.
+func TestRunSubcommand_ForgetFailure_NoSpawn(t *testing.T) {
+	envPath := writeEnvFile(t, "FOO=op://V/I/f\n")
+	fr := &fakeRunner{
+		secrets:   map[string][]byte{"op://V/I/f": []byte("alpha")},
+		forgetErr: errors.New("simulated signout failure"),
+	}
+	fs := &fakeSpawner{}
+
+	code := runWith([]string{"run", "--env-file=" + envPath, "--", "echo"}, fr, allow(), fs)
+	if code != exitOpFail {
+		t.Errorf("exit = %d, want %d", code, exitOpFail)
+	}
+	if fs.called != 0 {
+		t.Errorf("spawn called %d times after signout failure; want 0 (child must not inherit a live session)", fs.called)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want 1", fr.forgetCalled)
+	}
+}

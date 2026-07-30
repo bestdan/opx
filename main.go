@@ -349,7 +349,10 @@ func renderOutput(bindings []prompt.Binding, secrets [][]byte, envMode bool) []b
 		buf.WriteString("export ")
 		buf.WriteString(b.Name)
 		buf.WriteByte('=')
-		buf.Write(shellquote.Quote(secrets[i]))
+		// Same trailing-newline strip as buildChildEnv: shellquote preserves
+		// the newline inside the quotes, so without this `eval $(opx --env
+		// FOO=op://...)` sets FOO with op's newline still attached.
+		buf.Write(shellquote.Quote(bytes.TrimSuffix(secrets[i], []byte("\n"))))
 		buf.WriteString(";\n")
 	}
 	return buf.Bytes()
@@ -414,9 +417,7 @@ func runSubcommand(args []string, r oprunner.Runner, c prompt.Confirmer, sp spaw
 
 	// Forget the session before the child starts so the child never sees an
 	// active op session, regardless of whether reads succeeded.
-	if ferr := r.ForgetSession(); ferr != nil {
-		diagf("warning: op signout failed: %v\n", ferr)
-	}
+	forgetErr := r.ForgetSession()
 
 	if ctx.Err() != nil {
 		diagf("interrupted\n")
@@ -426,9 +427,22 @@ func runSubcommand(args []string, r oprunner.Runner, c prompt.Confirmer, sp spaw
 		diagf("read failed: %v\n", readErr)
 		return exitOpFail
 	}
+	// Fail closed. Unlike the single/--env modes — where opx is about to exit
+	// anyway — run mode hands control to a potentially long-lived child, so
+	// spawning after a failed signout would leave it holding a live op
+	// session. That is the one thing this tool exists to prevent.
+	if forgetErr != nil {
+		diagf("op signout failed, not spawning child: %v\n", forgetErr)
+		return exitOpFail
+	}
 
 	childEnv := buildChildEnv(os.Environ(), literals, bindings, secrets)
-	code, err := sp.Spawn(ctx, argv, childEnv)
+	// Deliberately not the signal context: exec.CommandContext would SIGKILL
+	// the child on SIGINT/SIGTERM. The terminal already delivers those to the
+	// child via the foreground process group, so opx killing it too is both
+	// redundant and harsher — it pre-empts the child's own cleanup. opx waits
+	// and propagates the child's exit code instead.
+	code, err := sp.Spawn(context.Background(), argv, childEnv)
 	if err != nil {
 		diagf("spawn failed: %v\n", err)
 		return exitOpFail
@@ -592,7 +606,12 @@ func buildChildEnv(parent []string, literals []envfile.Entry, bindings []prompt.
 		env[e.Name] = e.Value
 	}
 	for i, b := range bindings {
-		env[b.Name] = string(secrets[i])
+		// `op read` terminates its output with a newline, which is invisible
+		// in `$(opx op://...)` (command substitution strips it) but very
+		// visible in an env var — a bearer token or connection string with a
+		// trailing newline is rejected by most consumers. Strip exactly one,
+		// so a multiline secret keeps its own final newline.
+		env[b.Name] = strings.TrimSuffix(string(secrets[i]), "\n")
 	}
 	out := make([]string, 0, len(env))
 	for k, v := range env {

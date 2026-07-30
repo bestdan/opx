@@ -539,3 +539,31 @@ func TestWantVersion(t *testing.T) {
 		})
 	}
 }
+
+// `op read` newline-terminates its output. shellquote preserves that newline
+// inside the quotes, so without a strip `eval $(opx --env FOO=op://...)`
+// exports FOO with op's newline still attached.
+func TestRun_EnvStripsOpReadTrailingNewline(t *testing.T) {
+	fr := &fakeRunner{secrets: map[string][]byte{"op://V/A/f": []byte("sk-abc123\n")}}
+	out := captureStdout(t, func() {
+		if code := run([]string{"--env", "TOKEN=op://V/A/f"}, fr, allow()); code != exitSuccess {
+			t.Errorf("exit code = %d, want %d", code, exitSuccess)
+		}
+	})
+	if want := "export TOKEN='sk-abc123';\n"; out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+}
+
+// Only op's own trailing newline goes — a multiline secret keeps its final one.
+func TestRun_EnvKeepsMultilineSecretFinalNewline(t *testing.T) {
+	fr := &fakeRunner{secrets: map[string][]byte{"op://V/A/f": []byte("line1\nline2\n\n")}}
+	out := captureStdout(t, func() {
+		if code := run([]string{"--env", "KEY=op://V/A/f"}, fr, allow()); code != exitSuccess {
+			t.Errorf("exit code = %d, want %d", code, exitSuccess)
+		}
+	})
+	if want := "export KEY='line1\nline2\n';\n"; out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+}

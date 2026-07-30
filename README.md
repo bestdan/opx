@@ -157,7 +157,13 @@ Behavior:
 
 - One confirmation dialog covers every `op://` URI in the request.
 - The `op` session is forgotten **before** the child is spawned, so the
-  child never inherits a usable session.
+  child never inherits a usable session. If that signout fails, the
+  child is not spawned at all.
+- Secrets are stripped of the trailing newline `op read` emits, so a
+  token or connection string arrives in the child's environment exactly
+  as stored.
+- `Ctrl-C` reaches the child directly; opx does not kill it, so a child
+  that traps `SIGINT` can finish its own cleanup.
 - Reads are atomic: if any URI fails to resolve, the child is not
   spawned and nothing is written.
 - Secrets reach the child only via its environment — they are never
