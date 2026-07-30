@@ -16,9 +16,9 @@ func TestSpawn_EmptyArgv(t *testing.T) {
 }
 
 func TestSpawn_RunsRealBinary(t *testing.T) {
-	// /usr/bin/true exists on macOS and Linux. If a host lacks it the test
-	// skips rather than fails — this is a smoke test of the wiring, not a
-	// platform compatibility check.
+	// A smoke test of the exec wiring, not a platform compatibility check.
+	// `true` is POSIX and present on every host CI runs on, so a failure to
+	// find it is a real problem worth failing on.
 	code, err := spawn.New().Spawn(context.Background(), []string{"true"}, nil)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
