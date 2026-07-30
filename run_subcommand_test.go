@@ -306,6 +306,28 @@ func TestRunSubcommand_DialogCoversAllURIs(t *testing.T) {
 	}
 }
 
+func TestRunSubcommand_ConfirmDetailDescribesChildCommand(t *testing.T) {
+	// The dialog's detail line in run mode must describe the command about
+	// to be spawned — the process that will actually receive the secrets —
+	// not the calling ancestry, which the header already names.
+	envPath := writeEnvFile(t, "FOO=op://V/I/f\n")
+	fr := &fakeRunner{secrets: map[string][]byte{"op://V/I/f": []byte("v")}}
+	fc := allow()
+	fs := &fakeSpawner{}
+
+	code := runWith([]string{"run", "--env-file=" + envPath, "--", "python3", "linear-archive.py", "--team", "PreThink"}, fr, fc, fs)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d, want %d", code, exitSuccess)
+	}
+	if fc.calls != 1 {
+		t.Fatalf("Confirm calls = %d, want 1", fc.calls)
+	}
+	want := "to run: python3 linear-archive.py --team PreThink"
+	if fc.lastRequest.CallerDetail != want {
+		t.Errorf("CallerDetail = %q, want %q", fc.lastRequest.CallerDetail, want)
+	}
+}
+
 func TestRunSubcommand_ImplicitArgvWithoutDoubleDash(t *testing.T) {
 	envPath := writeEnvFile(t, "FOO=op://V/I/f\n")
 	fr := &fakeRunner{secrets: map[string][]byte{"op://V/I/f": []byte("v")}}

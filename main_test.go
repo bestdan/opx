@@ -218,6 +218,135 @@ func captureStdoutCode(t *testing.T, fn func() int) int {
 	return code
 }
 
+// --- forgetOnce ---
+
+func TestForgetOnce_SecondCallIsNoOpReturnsFirstError(t *testing.T) {
+	fr := &fakeRunner{forgetErr: errors.New("signout failed")}
+	fo := &forgetOnce{Runner: fr}
+
+	err1 := fo.ForgetSession()
+	err2 := fo.ForgetSession()
+
+	if !errors.Is(err1, err2) && err1 != err2 {
+		t.Errorf("second call returned different error: first=%v second=%v", err1, err2)
+	}
+	if err1 == nil || err1.Error() != "signout failed" {
+		t.Errorf("first call error = %v, want %q", err1, "signout failed")
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("underlying Runner.ForgetSession called %d times, want 1", fr.forgetCalled)
+	}
+}
+
+// mainCatchAll mirrors main()'s post-runWith catch-all: wrap the fake runner
+// in forgetOnce and call ForgetSession after runWith, exactly as main() does
+// after os.Exit(runWith(...)) would otherwise skip it.
+func mainCatchAll(fr *fakeRunner, fn func(r oprunner.Runner) int) (code int, forgetErr error) {
+	fo := &forgetOnce{Runner: fr}
+	code = fn(fo)
+	forgetErr = fo.ForgetSession()
+	return code, forgetErr
+}
+
+func TestMainCatchAll_DeniedSingle_ForgetsOnce(t *testing.T) {
+	fr := &fakeRunner{}
+	code, _ := mainCatchAll(fr, func(r oprunner.Runner) int {
+		return run([]string{"op://V/I/f"}, r, deny())
+	})
+	if code != exitDenied {
+		t.Errorf("exit code = %d, want %d", code, exitDenied)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want 1", fr.forgetCalled)
+	}
+}
+
+func TestMainCatchAll_DeniedEnv_ForgetsOnce(t *testing.T) {
+	fr := &fakeRunner{}
+	code, _ := mainCatchAll(fr, func(r oprunner.Runner) int {
+		return run([]string{"--env", "A=op://V/A/f"}, r, deny())
+	})
+	if code != exitDenied {
+		t.Errorf("exit code = %d, want %d", code, exitDenied)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want 1", fr.forgetCalled)
+	}
+}
+
+func TestMainCatchAll_DeniedRun_ForgetsOnceNoSpawn(t *testing.T) {
+	dir := t.TempDir()
+	envPath := dir + "/.env"
+	if err := os.WriteFile(envPath, []byte("A=op://V/A/f\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	fr := &fakeRunner{}
+	fs := &fakeSpawner{}
+	code, _ := mainCatchAll(fr, func(r oprunner.Runner) int {
+		return runWith([]string{"run", "--env-file=" + envPath, "--", "echo", "hi"}, r, deny(), fs)
+	})
+	if code != exitDenied {
+		t.Errorf("exit code = %d, want %d", code, exitDenied)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want 1", fr.forgetCalled)
+	}
+	if fs.called != 0 {
+		t.Error("spawner should not have been called after denial")
+	}
+}
+
+func TestMainCatchAll_UsageError_ForgetsOnce(t *testing.T) {
+	fr := &fakeRunner{}
+	code, _ := mainCatchAll(fr, func(r oprunner.Runner) int {
+		return run([]string{"--badflag"}, r, allow())
+	})
+	if code != exitUsage {
+		t.Errorf("exit code = %d, want %d", code, exitUsage)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want 1 (usage errors now sign out too)", fr.forgetCalled)
+	}
+}
+
+func TestMainCatchAll_SuccessfulSingleRead_ForgetsExactlyOnce(t *testing.T) {
+	fr := &fakeRunner{secret: []byte("s")}
+	var code int
+	_ = captureStdout(t, func() {
+		code, _ = mainCatchAll(fr, func(r oprunner.Runner) int {
+			return run([]string{"op://V/I/f"}, r, allow())
+		})
+	})
+	if code != exitSuccess {
+		t.Errorf("exit code = %d, want %d", code, exitSuccess)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want exactly 1 (guards against catch-all double-signout)", fr.forgetCalled)
+	}
+}
+
+func TestMainCatchAll_SuccessfulRun_ForgetsExactlyOnceBeforeSpawn(t *testing.T) {
+	dir := t.TempDir()
+	envPath := dir + "/.env"
+	if err := os.WriteFile(envPath, []byte("A=op://V/A/f\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	fr := &fakeRunner{secrets: map[string][]byte{"op://V/A/f": []byte("alpha")}}
+	fs := &fakeSpawner{}
+	code, _ := mainCatchAll(fr, func(r oprunner.Runner) int {
+		return runWith([]string{"run", "--env-file=" + envPath, "--", "echo", "hi"}, r, allow(), fs)
+	})
+	if code != exitSuccess {
+		t.Errorf("exit code = %d, want %d", code, exitSuccess)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want exactly 1", fr.forgetCalled)
+	}
+	if fs.called == 0 {
+		t.Error("spawner should have been called on success")
+	}
+}
+
 func TestRun_ConfirmDeny_NoOpRead(t *testing.T) {
 	// When the user denies the dialog, op should never be called and the exit
 	// code must be exitDenied (distinct from exitOpFail so callers can

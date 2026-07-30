@@ -37,6 +37,17 @@ type Binding struct {
 type Request struct {
 	Bindings []Binding
 	Caller   string // executable name of the parent process
+
+	// CallerDetail is the fully-rendered detail line shown under the dialog
+	// header (e.g. "via claude › python3 script.py" or "to run: python3
+	// script.py --team X"). Callers are responsible for wording their own
+	// prefix — confirmAndRead uses "via " + caller.Describe(), runSubcommand
+	// uses "to run: " + the child argv — since only the caller knows whether
+	// it is describing an ancestor or a child about to be spawned.
+	// Suppressed by callerDetailLine when, after stripping any "X › "
+	// ancestor prefixes, what remains is equal to Caller: that means the
+	// line adds nothing beyond what the dialog header's %q already shows.
+	CallerDetail string
 }
 
 // Confirmer presents the user with a confirmation dialog.
@@ -72,8 +83,13 @@ func (s *systemConfirmer) Confirm(req Request) error {
 // multiple bindings it lists each URI on its own line separated by blank
 // lines, with the bound variable name appended when present.
 func message(req Request) string {
+	detail := callerDetailLine(req)
 	if len(req.Bindings) == 1 && req.Bindings[0].Name == "" {
-		return fmt.Sprintf("%q wants to read:\n\n%s", req.Caller, req.Bindings[0].URI)
+		header := fmt.Sprintf("%q wants to read:", req.Caller)
+		if detail != "" {
+			return fmt.Sprintf("%s\n\n%s\n\n%s", header, detail, req.Bindings[0].URI)
+		}
+		return fmt.Sprintf("%s\n\n%s", header, req.Bindings[0].URI)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%q wants to read %d secret", req.Caller, len(req.Bindings))
@@ -81,10 +97,13 @@ func message(req Request) string {
 		b.WriteByte('s')
 	}
 	b.WriteString(":\n")
+	if detail != "" {
+		b.WriteString("\n" + detail)
+	}
 	// Blank line between bullets so long URI lists don't pile up. The leading
 	// "\n\n" before each bullet adds one separator line above the bullet; the
 	// first bullet's leading blank line also separates the list from the
-	// "wants to read N secrets:" header.
+	// "wants to read N secrets:" header (or the via line, when present).
 	for _, bind := range req.Bindings {
 		if bind.Name != "" {
 			fmt.Fprintf(&b, "\n\n  • %s  →  $%s", bind.URI, bind.Name)
@@ -93,6 +112,36 @@ func message(req Request) string {
 		}
 	}
 	return b.String()
+}
+
+// detailPrefixes lists the wording prefixes callers put on a fully-rendered
+// CallerDetail line (see the Request.CallerDetail doc comment). Stripped
+// before comparing against Caller so the duplicate check below isn't fooled
+// by the wording.
+var detailPrefixes = []string{"via ", "to run: "}
+
+// callerDetailLine returns req.CallerDetail verbatim, or "" when it is empty
+// or adds nothing beyond the dialog header's %q. "Adds nothing" means: after
+// stripping a known wording prefix and any "X › " ancestor prefixes, what
+// remains equals Caller, case-insensitively.
+func callerDetailLine(req Request) string {
+	if req.CallerDetail == "" {
+		return ""
+	}
+	stripped := req.CallerDetail
+	for _, p := range detailPrefixes {
+		if s, ok := strings.CutPrefix(stripped, p); ok {
+			stripped = s
+			break
+		}
+	}
+	if idx := strings.LastIndex(stripped, " › "); idx >= 0 {
+		stripped = stripped[idx+len(" › "):]
+	}
+	if strings.EqualFold(stripped, req.Caller) {
+		return ""
+	}
+	return req.CallerDetail
 }
 
 // confirmDarwin shows a native macOS dialog via osascript.
