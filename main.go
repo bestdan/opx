@@ -456,13 +456,14 @@ func parseRunArgs(args []string) (bindings []prompt.Binding, literals []envfile.
 		value  string
 		source string // "--env" or file path, for error messages
 		line   int
+		inline bool // came from --env rather than an --env-file
 	}
 	var ordered []pending
-	addEntry := func(name, value, source string, line int) error {
+	addEntry := func(name, value, source string, line int, inline bool) error {
 		if !envNameRE.MatchString(name) {
 			return fmt.Errorf("%s: %q is not a valid shell variable name", source, name)
 		}
-		ordered = append(ordered, pending{name: name, value: value, source: source, line: line})
+		ordered = append(ordered, pending{name: name, value: value, source: source, line: line, inline: inline})
 		return nil
 	}
 
@@ -483,7 +484,7 @@ func parseRunArgs(args []string) (bindings []prompt.Binding, literals []envfile.
 				return nil, nil, nil, perr
 			}
 			for _, e := range entries {
-				if aerr := addEntry(e.Name, e.Value, args[i], e.Line); aerr != nil {
+				if aerr := addEntry(e.Name, e.Value, args[i], e.Line, false); aerr != nil {
 					return nil, nil, nil, aerr
 				}
 			}
@@ -495,7 +496,7 @@ func parseRunArgs(args []string) (bindings []prompt.Binding, literals []envfile.
 				return nil, nil, nil, perr
 			}
 			for _, e := range entries {
-				if aerr := addEntry(e.Name, e.Value, path, e.Line); aerr != nil {
+				if aerr := addEntry(e.Name, e.Value, path, e.Line, false); aerr != nil {
 					return nil, nil, nil, aerr
 				}
 			}
@@ -509,7 +510,7 @@ func parseRunArgs(args []string) (bindings []prompt.Binding, literals []envfile.
 			if perr != nil {
 				return nil, nil, nil, perr
 			}
-			if aerr := addEntry(name, value, "--env", 0); aerr != nil {
+			if aerr := addEntry(name, value, "--env", 0, true); aerr != nil {
 				return nil, nil, nil, aerr
 			}
 			i++
@@ -518,7 +519,7 @@ func parseRunArgs(args []string) (bindings []prompt.Binding, literals []envfile.
 			if perr != nil {
 				return nil, nil, nil, perr
 			}
-			if aerr := addEntry(name, value, "--env", 0); aerr != nil {
+			if aerr := addEntry(name, value, "--env", 0, true); aerr != nil {
 				return nil, nil, nil, aerr
 			}
 			i++
@@ -530,12 +531,22 @@ func parseRunArgs(args []string) (bindings []prompt.Binding, literals []envfile.
 		}
 	}
 
-	// Last assignment wins. Walk in order and keep only the latest entry
-	// per name; this lets inline --env override file entries while still
-	// honouring an explicit later --env-file when one is supplied after.
+	// Inline --env beats --env-file unconditionally, regardless of the order
+	// the flags appear in; within each of those two layers, the last
+	// assignment to a name wins. Order-independence matters because the
+	// inline form is what a user reaches for to override a checked-in env
+	// file, and having that silently lose to a later --env-file would be a
+	// surprise in the direction of using the wrong secret.
 	latest := map[string]int{}
+	inlineSeen := map[string]bool{}
 	for idx, e := range ordered {
+		if inlineSeen[e.name] && !e.inline {
+			continue
+		}
 		latest[e.name] = idx
+		if e.inline {
+			inlineSeen[e.name] = true
+		}
 	}
 	for idx, e := range ordered {
 		if latest[e.name] != idx {

@@ -28,6 +28,11 @@ type Entry struct {
 	Line  int
 }
 
+// maxLineBytes caps a single env-file line. Generous enough for an inlined
+// PEM blob, bounded so a malformed (e.g. binary) file can't be read into
+// memory without limit.
+const maxLineBytes = 1 << 20
+
 // nameRE matches POSIX-portable shell variable names. Kept in sync with
 // envNameRE in main.go; duplicated here so the package stays self-contained.
 var nameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -48,6 +53,10 @@ func ParseFile(path string) ([]Entry, error) {
 func Parse(r io.Reader, source string) ([]Entry, error) {
 	var entries []Entry
 	scanner := bufio.NewScanner(r)
+	// bufio.Scanner defaults to a 64KiB line cap, which a single-line PEM key
+	// or certificate will exceed. Raise it so a legitimately large value is a
+	// value, not a parse error.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 	lineNo := 0
 	for scanner.Scan() {
 		lineNo++

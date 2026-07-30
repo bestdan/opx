@@ -118,3 +118,27 @@ func TestParseFile_Missing(t *testing.T) {
 	}
 }
 
+// An inlined PEM key on one line blows past bufio.Scanner's default 64KiB
+// token cap. Parsing must treat it as a value, not a hard error.
+func TestParse_LongValue(t *testing.T) {
+	value := strings.Repeat("x", 200*1024)
+	got, err := envfile.Parse(strings.NewReader("BIG="+value+"\n"), "big.env")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("entries = %d, want 1", len(got))
+	}
+	if got[0].Value != value {
+		t.Errorf("value length = %d, want %d", len(got[0].Value), len(value))
+	}
+}
+
+// Past the cap it is still an error — the bound exists so a binary file
+// can't be slurped into memory unchecked.
+func TestParse_OverlongValueRejected(t *testing.T) {
+	_, err := envfile.Parse(strings.NewReader("BIG="+strings.Repeat("x", 2<<20)+"\n"), "big.env")
+	if err == nil {
+		t.Fatal("Parse(overlong line) returned nil error")
+	}
+}

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestdan/opx/internal/prompt"
+	"github.com/bestdan/opx/internal/spawn"
 )
 
 // fakeSpawner records what would have been exec'd without actually doing so.
@@ -192,6 +192,57 @@ func TestRunSubcommand_InlineEnvOverridesFile(t *testing.T) {
 	}
 }
 
+// Same as the previous test but with the flags reversed: --env before
+// --env-file. Inline wins on identity, not on position, so a checked-in env
+// file loaded after an explicit override can't quietly reinstate its own
+// value.
+func TestRunSubcommand_InlineEnvOverridesLaterFile(t *testing.T) {
+	envPath := writeEnvFile(t, "FOO=op://V/A/f\n")
+	fr := &fakeRunner{secrets: map[string][]byte{
+		"op://V/A/f": []byte("from-file"),
+		"op://V/B/f": []byte("from-cli"),
+	}}
+	fs := &fakeSpawner{}
+
+	code := runWith([]string{
+		"run",
+		"--env", "FOO=op://V/B/f",
+		"--env-file=" + envPath,
+		"--", "echo",
+	}, fr, allow(), fs)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d, want %d", code, exitSuccess)
+	}
+	if v, _ := envValue(fs.lastEnv, "FOO"); v != "from-cli" {
+		t.Errorf("FOO = %q, want from-cli (inline --env must win regardless of flag order)", v)
+	}
+	if len(fr.readCalls) != 1 || fr.readCalls[0] != "op://V/B/f" {
+		t.Errorf("readCalls = %v, want [op://V/B/f]", fr.readCalls)
+	}
+}
+
+// Between two files, ordinary last-wins still applies — the inline-priority
+// rule must not flatten that.
+func TestRunSubcommand_LaterFileOverridesEarlierFile(t *testing.T) {
+	first := writeEnvFile(t, "FOO=op://V/A/f\n")
+	second := writeEnvFile(t, "FOO=op://V/B/f\n")
+	fr := &fakeRunner{secrets: map[string][]byte{
+		"op://V/A/f": []byte("first"),
+		"op://V/B/f": []byte("second"),
+	}}
+	fs := &fakeSpawner{}
+
+	code := runWith([]string{
+		"run", "--env-file=" + first, "--env-file=" + second, "--", "echo",
+	}, fr, allow(), fs)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d, want %d", code, exitSuccess)
+	}
+	if v, _ := envValue(fs.lastEnv, "FOO"); v != "second" {
+		t.Errorf("FOO = %q, want second (later --env-file wins between files)", v)
+	}
+}
+
 func TestRunSubcommand_MissingFile(t *testing.T) {
 	fr := &fakeRunner{}
 	fs := &fakeSpawner{}
@@ -302,4 +353,4 @@ func TestRunSubcommand_DoubleDashLetsChildKeepFlags(t *testing.T) {
 
 // guard against accidentally regressing: a spawner type assertion guarantees
 // the fake satisfies the interface signature used in main.go.
-var _ = func() prompt.Confirmer { return allow() }
+var _ spawn.Spawner = (*fakeSpawner)(nil)
