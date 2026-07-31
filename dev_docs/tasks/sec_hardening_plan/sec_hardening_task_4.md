@@ -17,7 +17,7 @@ Part of [[sec_hardening_plan]]. Closes **F3**.
 
 ## Context
 
-On every non-Linux platform — macOS, the primary target — the whole caller identity shown in the dialog comes from two `ps` invocations:
+The whole caller identity shown in the dialog comes from two `ps` invocations:
 
 ```go
 exec.Command("ps", "-o", "ppid=,comm=", "-p", strconv.Itoa(pid))  // caller.go:327
@@ -28,9 +28,11 @@ Both resolve `ps` through `exec.LookPath` against the PATH opx inherited from th
 
 There is no privilege escalation — the shim runs as the same uid — but the dialog is the trust boundary, and a boundary the attacker can write the text of is not a boundary.
 
-The Linux path (`ancestorChainLinux`, `caller.go:217`) already avoids this entirely by reading `/proc`; no subprocess, no PATH. The macOS path should get as close to that as a `ps` call allows.
+Since #17 narrowed opx to macOS, this matters more than when it was written: the `/proc` walk that used to make Linux immune to it is gone, so `ps` is now the **only** source of caller identity. There is no second path to degrade to and nothing to cross-check against.
 
-`ps` is at `/bin/ps` on macOS and every BSD; on Linux (where this path is only reached if `/proc` is unavailable) it is `/bin/ps` or `/usr/bin/ps`.
+`ps` is at `/bin/ps` on macOS. `/usr/bin/ps` is worth keeping as a second candidate purely for robustness; it costs one `stat`.
+
+`resolveHelper` in `internal/prompt` (merged in #14) already does exactly this screening. Do **not** import it across package boundaries — `caller` importing `prompt` inverts the dependency, since `main` composes both. Duplicate the ten lines; `AGENTS.md` prefers three similar lines to a premature abstraction, and the two lists have no reason to move together.
 
 Note while you are in here: `psArgv` splits `ps -o args=` output with `strings.Fields`, which mangles any argument containing a space (`sh -c 'a b'` becomes three tokens) and cannot be fixed without a different data source — `ps` gives no delimiter. Leave the behaviour alone in this task; [[sec_hardening_task_6]] and [[sec_hardening_task_7]] deal with faithful rendering, and this limitation belongs in the notes there.
 
@@ -47,7 +49,7 @@ Note while you are in here: `psArgv` splits `ps -o args=` output with `strings.F
 
 - `internal/caller/export_test.go` exposes `psPath` as `PSPathForTest`.
 - `internal/caller/caller_test.go` covers `psPath` against `t.TempDir()` fixtures the same way [[sec_hardening_task_3]] covers `resolveHelper`: missing, directory, non-executable, world-writable, clean — plus a case asserting a fake `ps` reachable only via `t.Setenv("PATH", ...)` is **not** selected.
-- A test asserting `Name()` returns `"unknown"` rather than panicking or hanging when no `ps` is resolvable (skip on `runtime.GOOS == "linux"`, where the `/proc` path is taken).
+- A test asserting `Name()` returns `"unknown"` rather than panicking or hanging when no `ps` is resolvable — with `ps` now the only identity source, this degradation is the whole safety net.
 - No test shells out to a real `ps` in a way CI cannot satisfy — `AGENTS.md` forbids tests that depend on real external binaries.
 - `make test` and `make lint` pass.
 

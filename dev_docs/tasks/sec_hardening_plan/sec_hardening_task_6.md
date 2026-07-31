@@ -2,8 +2,10 @@
 title: Render the run-mode child command faithfully in the approval dialog
 priority: high
 size: 3
-status: new
+status: done
 created: 2026-07-31
+completed: 2026-07-31
+completed_by: "#16"
 source_branch: bestdan/security-scan-fixes
 parent: sec_hardening
 related_files:
@@ -17,6 +19,20 @@ tags: [security, caller, run-mode]
 ---
 
 Part of [[sec_hardening_plan]]. Closes **F7, F9, F10**.
+
+> **Done — merged as #16**, with two corrections worth recording.
+>
+> The instruction below to reuse `internal/shellquote` was **wrong** and was
+> not followed: `Quote` always wraps in single quotes (right for `eval`, noise
+> for display) and passes control bytes through unchanged, since nothing
+> expands inside single quotes. A display quoter is a different problem from a
+> shell quoter and they should not share code.
+>
+> The replacement quoter then shipped its own bug, fixed in #19: it escaped
+> `"` but not `\`, so an argument ending in a backslash could forge its own
+> closing quote and make two arguments read as one. Writing a quoter by hand
+> is easy to get 90% right — the remaining 10% is the whole security value,
+> and neither the plan nor the PR's tests caught it.
 
 ## Context
 

@@ -15,14 +15,24 @@ Close the ten verified findings from `CLAUDE-SECURITY-20260731-081020/CLAUDE-SEC
 
 The ten findings collapse into four groups, which is how the tasks are sliced:
 
-| # | Root cause | Findings | Tasks |
-|---|---|---|---|
-| A | Dialog body interpolates caller-controlled text without sanitization — `sanitizeCallerDetail` from `a58bd99` was never applied to `Binding.URI` / `Binding.Name` | F2, F4, F8 | [[sec_hardening_task_1]], [[sec_hardening_task_2]] |
-| B | Security-critical helper binaries (`zenity`, `osascript`, `ps`, `op`) resolved by bare name through caller-controlled PATH | **F1 (HIGH)**, F3, F5 | [[sec_hardening_task_3]], [[sec_hardening_task_4]], [[sec_hardening_task_5]] |
-| C | Run-mode dialog understates the child that receives the secrets — `renderArgv` basenames path-like tokens, `RenderCommand` cuts at 120 runes | F7, F9, F10 | [[sec_hardening_task_6]] |
-| D | Caller identity is the self-asserted `comm` string; the verifiable executable path is fetched and then discarded | F6 | [[sec_hardening_task_7]] |
+| # | Root cause | Findings | Tasks | Status |
+|---|---|---|---|---|
+| A | Dialog interpolates caller-controlled text without sanitization — `sanitizeCallerDetail` from `a58bd99` was never applied to `Binding.URI` / `Binding.Name` | F2, F4, F8 | [[sec_hardening_task_1]], [[sec_hardening_task_2]] | task 1 **merged** (#15); task 2 open |
+| B | Security-critical helper binaries (`osascript`, `ps`, `op`) resolved by bare name through caller-controlled PATH | **F1 (HIGH)**, F3, F5 | [[sec_hardening_task_3]], [[sec_hardening_task_4]], [[sec_hardening_task_5]] | task 3 **merged** (#14); tasks 4, 5 open |
+| C | Run-mode dialog understates the child that receives the secrets — `renderArgv` basenames path-like tokens, `RenderCommand` cuts at 120 runes | F7, F9, F10 | [[sec_hardening_task_6]] | **merged** (#16, + #19) |
+| D | Caller identity is the self-asserted `comm` string; the verifiable executable path is fetched and then discarded | F6 | [[sec_hardening_task_7]] | open |
 
-Group B contains the only HIGH: on Linux a planted `zenity` that exits `0` **is** the approval, and its presence also suppresses the `/dev/tty` fallback, so no prompt appears at all.
+Group B contained the only HIGH: a planted `zenity` that exits `0` **was** the approval, and its presence also suppressed the `/dev/tty` fallback, so no prompt appeared at all.
+
+## Revised 2026-07-31, after #17 narrowed opx to macOS only
+
+The Linux and `/dev/tty` code paths are gone from the tree, which changes three things:
+
+- **F1's Linux half is moot** as well as fixed. What survives from task 3 and still matters is `resolveHelper` and the `osascript` hardening — the same class on the one supported platform.
+- **Task 7 shrinks** (size 5 → 3): the `/proc/<pid>/exe` half went with the Linux support. The macOS side was always the important one.
+- **Tasks 4 and 7 get sharper, not easier.** `ps` is now the *only* source of caller identity, with no `/proc` walk to fall back on or cross-check against.
+
+Task 8 is **unblocked and promoted**: three security properties are merged and undocumented, so its window is open now, not after the remaining code.
 
 ## Scope / non-goals
 
@@ -48,22 +58,23 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 
 ## Tasks
 
-1. [[sec_hardening_task_1]] — Sanitize every dialog-body interpolation, not just `CallerDetail` (F2, F4, F8).
+1. ~~[[sec_hardening_task_1]] — Sanitize every dialog interpolation, not just `CallerDetail`~~ — **merged, #15** (+ `0bb2506`).
 2. [[sec_hardening_task_2]] — Reject C0/C1 control bytes in `uri.IsOPURI` so a forged URI fails before the prompt (F2, F4, F8, defense in depth).
-3. [[sec_hardening_task_3]] — Resolve `zenity` and `osascript` from a trusted absolute-path allowlist; fall back to TTY (**F1, HIGH**).
+3. ~~[[sec_hardening_task_3]] — Resolve dialog helpers from a trusted absolute-path allowlist~~ — **merged, #14**.
 4. [[sec_hardening_task_4]] — Invoke `ps` by absolute path with a minimal environment (F3).
 5. [[sec_hardening_task_5]] — Resolve `op` once, reject untrusted locations, fail closed (F5).
-6. [[sec_hardening_task_6]] — Render the run-mode child command faithfully: full paths, full values, explicit elision (F7, F9, F10).
+6. ~~[[sec_hardening_task_6]] — Render the run-mode child command faithfully~~ — **merged, #16** (+ #19).
 7. [[sec_hardening_task_7]] — Base caller identity on the executable path, not the self-asserted `comm` (F6).
-8. [[sec_hardening_task_8]] — Record the new invariants and the residual risk in `AGENTS.md` and `README.md`.
+8. [[sec_hardening_task_8]] — Record the merged invariants and the residual risk in `AGENTS.md` and `README.md`. **Next up.**
 9. [[sec_hardening_task_9]] — Graduate the durable decisions to `dev_docs/security-hardening.md` and delete this plan folder.
 
-Tasks 1–7 are independently shippable PRs and touch disjoint files, with two exceptions noted in their `is_blocked_by` fields. Task 8 waits on the code; task 9 closes the plan out.
+Remaining order: **8** (open window, merged code is undocumented), then **4**, then **7** (blocked by 4 — both rewrite `psPPIDComm`), then **2**, then **5** once its open question is answered. Task 9 closes the plan out.
 
 ## Open questions
 
-1. **Is a compiled-in absolute-path allowlist for helper binaries acceptable under the "no allowlists, no config" rule in `AGENTS.md`?** That rule targets indirection between the user-typed URI and the read. A helper-path allowlist is invisible to the user and does not touch the URI, so I read it as permitted — but it is the one place this plan brushes against a stated invariant, and it is load-bearing for the HIGH finding.
+1. ~~**Is a compiled-in absolute-path allowlist for helper binaries acceptable under the "no allowlists, no config" rule in `AGENTS.md`?**~~ **Answered by #14 merging.** The rule targets indirection between the user-typed URI and the read; a helper-path list touches neither and is invisible to the user. `resolveHelper` has since taken a third caller without objection.
 2. **How strict should `op` resolution be (task 5)?** Strict absolute allowlist (`/usr/local/bin/op`, `/opt/homebrew/bin/op`, `/usr/bin/op`) is the strongest, but breaks anyone with `op` installed elsewhere — and breaking a security tool's happy path invites people to stop using it. The looser alternative is: keep `exec.LookPath`, but reject results under the current working tree, relative PATH entries, and `node_modules/.bin`. The plan currently specifies the looser rule with a hard failure on rejection; say the word to tighten it.
-3. **Should the dialog header show the full executable path (task 7), or keep the short name and put the path in the detail line?** Full paths in the header are unambiguous but noisy for the common case (`"claude"` becomes `"/usr/local/bin/claude"`). The plan currently keeps the short name in the header and adds the resolved path to the detail line.
-4. **Is a wider truncation limit acceptable for the run-mode line (task 6)?** The current cut is 120 runes. A long `sh -c '...'` payload will not fit at any sane width, so the plan makes the elision explicit (`… +3 more arguments`) rather than raising the limit much. macOS `display dialog` will scroll a long body; the TTY path wraps.
-5. **F3's panel is worth a second look.** Two of that finding's three verifiers were flagged for out-of-scope behaviour during the scan. The finding itself rests on four lines of `internal/caller/caller.go:327-344` and reads as sound, but the task is cheap enough that this shouldn't change the plan — flagging it for the record.
+3. **Should the dialog header show the full executable path (task 7), or keep the short name and put the path in the detail line?** Full paths in the header are unambiguous but noisy for the common case (`"claude"` becomes `"/usr/local/bin/claude"`). The plan currently keeps the short name in the header and adds the resolved path to the detail line. **Still open — task 7 needs this before implementation.**
+4. ~~**Is a wider truncation limit acceptable for the run-mode line (task 6)?**~~ **Answered by #16 merging**: 300 runes for the child line, explicit `+N more arguments` elision, `argv[0]` never truncated.
+5. **F3's panel is worth a second look.** Two of that finding's three verifiers were flagged for out-of-scope behaviour during the scan. The finding rests on four lines of `internal/caller/caller.go` and reads as sound, and the macOS narrowing has since made it *more* load-bearing rather than less — `ps` is now the only identity source. Flagged for the record; it does not change the plan.
+6. **New: what is the durable lesson for display escaping?** Two follow-up fixes on this plan (`0bb2506`, #19) each restored a property the original author believed was held — a missed interpolation site and an unescaped backslash. Both are quoting/escaping bugs found *after* review by someone reading the merged code. Task 8 should write the rule down; whether it also warrants a single shared display-escaping helper, rather than the current per-site discipline, is worth deciding rather than drifting into.

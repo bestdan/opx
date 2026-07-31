@@ -1,7 +1,7 @@
 ---
 title: Base caller identity on the executable path, not the self-asserted comm
 priority: medium
-size: 5
+size: 3
 status: new
 created: 2026-07-31
 source_branch: bestdan/security-scan-fixes
@@ -10,8 +10,7 @@ is_blocked_by: sec_hardening_task_4
 related_files:
   - internal/caller/caller.go:78 # Name()
   - internal/caller/caller.go:99 # Describe()
-  - internal/caller/caller.go:239 # readLinuxComm
-  - internal/caller/caller.go:326 # psPPIDComm — basenames away the full path at :339
+  - internal/caller/caller.go:313 # psPPIDComm — basenames away the full path
   - internal/caller/caller.go:61 # isUninteresting — the skip heuristic
   - internal/caller/caller_test.go
   - main.go:280 # Caller: caller.Name()
@@ -19,6 +18,13 @@ tags: [security, caller]
 ---
 
 Part of [[sec_hardening_plan]]. Closes **F6**. Blocked by [[sec_hardening_task_4]] — both rewrite `psPPIDComm`, and landing them in parallel would conflict.
+
+> **Revised after #17 narrowed opx to macOS only.** The `/proc/<pid>/exe`
+> half of this task is gone with the Linux support, along with
+> `ancestorChainLinux` and `readLinuxComm`. Size drops 5 → 3. What is left is
+> the macOS side, which was always the important one — and the removal makes
+> it sharper, not easier: `ps` is now the *only* source of caller identity,
+> with no `/proc` path to fall back on when it fails or lies.
 
 ## Context
 
@@ -35,10 +41,7 @@ Design tension worth naming: the short name is genuinely better UX in the dialog
 
 ## Task
 
-1. Add `exe string` to the `process` struct (`caller.go:67`), populated from the authoritative source per platform:
-   - Linux: `os.Readlink("/proc/<pid>/exe")` in `ancestorChainLinux`. Handle the `(deleted)` suffix the kernel appends for unlinked binaries — that suffix is itself a signal worth preserving in the display, not stripping.
-   - macOS: stop discarding the full path in `psPPIDComm` (`caller.go:339`). Keep `comm` as the basename for `isUninteresting` matching, and store the full path in `exe`.
-   - Either may fail (permissions, race, a process that exited). Failure degrades to an empty `exe`, never an abort — the existing walk is deliberately tolerant and must stay that way.
+1. Add `exe string` to the `process` struct, populated by `psPPIDComm`: stop discarding the full path macOS `ps -o comm=` already returns. Keep `comm` as the basename so `isUninteresting` matching is unaffected, and store the full path in `exe`. It may fail (permissions, race, a process that exited) — failure degrades to an empty `exe`, never an abort, since the existing walk is deliberately tolerant and must stay that way.
 2. `Name()` keeps returning the short name for the header. Derive it from `exe`'s basename when `exe` is available, falling back to `comm` — so the header stops being purely self-asserted even though it stays short.
 3. `Describe()` includes the resolved `exe` of the subject process in the detail line, so the user can distinguish `/usr/local/bin/claude` from `~/.cache/claude`. Fold this in without making the line unreadable — the existing `X › ` ancestor prefix and the 120-rune budget both still apply.
 4. Mark the anomaly rather than only showing the path. A path outside the conventional install locations (`/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, `/bin`, `/Applications`) is the signal a hurried user will otherwise miss. A short marker — `⚠` or `(unverified location)` — makes the interesting case visible without asking the user to parse paths. Keep the compiled-in location list as internal display logic, not user-facing configuration.
@@ -52,8 +55,8 @@ Design tension worth naming: the short name is genuinely better UX in the dialog
 - `internal/caller/export_test.go` exposes whatever new display helper this introduces (e.g. `FormatIdentityForTest`), so the rendering is testable without real process ancestry — follow the existing `DescribeArgvForTest` pattern, which decouples logic from the live process tree.
 - `internal/caller/caller_test.go` asserts: a `process` with `exe: "/usr/local/bin/claude"` renders without the anomaly marker; one with `exe: "/Users/x/.cache/claude"` renders with it; one with an empty `exe` degrades to the `comm`-only rendering and does not panic; a `(deleted)` suffix survives into the display.
 - A test asserting `Name()` prefers `exe`'s basename over `comm` when they disagree — that disagreement is the impersonation signal.
-- Linux-only test (`runtime.GOOS` guard) that `ancestorChainLinux` populates `exe` for the test process itself via `/proc/self/exe`.
 - Existing `caller_test.go` assertions updated where the display genuinely changed; do not delete a test to make the suite pass (`AGENTS.md`).
+- Assertions state what the identity line *renders as*, not merely that the bad value is absent — an implementation that dropped the name entirely must fail. (Both follow-up fixes on this plan, `0bb2506` and #19, slipped past absence-only assertions.)
 - `make test`, `make lint`, `make cross` pass.
 
 **User-run**

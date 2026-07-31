@@ -2,8 +2,10 @@
 title: Sanitize every dialog-body interpolation, not just CallerDetail
 priority: high
 size: 2
-status: new
+status: done
 created: 2026-07-31
+completed: 2026-07-31
+completed_by: "#15"
 source_branch: bestdan/security-scan-fixes
 parent: sec_hardening
 related_files:
@@ -17,6 +19,12 @@ tags: [security, prompt]
 ---
 
 Part of [[sec_hardening_plan]]. Closes **F2, F4, F8**.
+
+> **Done — merged as #15**, plus follow-up `0bb2506`: the `osascript` dialog
+> *title* interpolated `req.Caller` too and the original sweep missed it,
+> because the sweep was scoped to `message()` rather than to "every place
+> caller-controlled text reaches the dialog". Worth carrying forward — the
+> lesson is about how the sweep was scoped, not about that one line.
 
 ## Context
 

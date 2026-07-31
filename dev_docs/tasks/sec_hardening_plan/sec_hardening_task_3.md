@@ -2,8 +2,10 @@
 title: Resolve zenity and osascript from a trusted absolute-path allowlist
 priority: high
 size: 3
-status: new
+status: done
 created: 2026-07-31
+completed: 2026-07-31
+completed_by: "#14"
 source_branch: bestdan/security-scan-fixes
 parent: sec_hardening
 related_files:
@@ -16,6 +18,15 @@ tags: [security, prompt, high]
 ---
 
 Part of [[sec_hardening_plan]]. Closes **F1 (HIGH)**, and pre-empts the same class on darwin.
+
+> **Done — merged as #14.** Landed before #17 narrowed opx to macOS only. The
+> zenity and `/dev/tty` code this task describes no longer exists in the tree,
+> so F1's Linux half is moot on top of being fixed; what survives and matters
+> is `resolveHelper` plus the `osascript` hardening, which is where the whole
+> class actually bites on the supported platform. `resolveHelper` has since
+> picked up a third caller (the `defaults` appearance query), which is the
+> pattern working as intended. The task body below is left as written for the
+> record; read it as history, not as instructions.
 
 ## Context
 
