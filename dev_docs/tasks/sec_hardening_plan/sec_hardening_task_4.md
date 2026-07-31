@@ -2,7 +2,7 @@
 title: Invoke ps by absolute path with a minimal environment
 priority: medium
 size: 2
-status: new
+status: done
 created: 2026-07-31
 source_branch: bestdan/security-scan-fixes
 parent: sec_hardening

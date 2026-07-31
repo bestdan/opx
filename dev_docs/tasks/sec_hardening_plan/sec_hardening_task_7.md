@@ -6,18 +6,17 @@ status: new
 created: 2026-07-31
 source_branch: bestdan/security-scan-fixes
 parent: sec_hardening
-is_blocked_by: sec_hardening_task_4
 related_files:
-  - internal/caller/caller.go:78 # Name()
-  - internal/caller/caller.go:99 # Describe()
-  - internal/caller/caller.go:313 # psPPIDComm — basenames away the full path
-  - internal/caller/caller.go:61 # isUninteresting — the skip heuristic
+  - internal/caller/caller.go:77 # Name()
+  - internal/caller/caller.go:98 # Describe()
+  - internal/caller/caller.go:354 # psPPIDComm — basenames away the full path
+  - internal/caller/caller.go:60 # isUninteresting — the skip heuristic
   - internal/caller/caller_test.go
-  - main.go:280 # Caller: caller.Name()
+  - main.go:295 # Caller: caller.Name()
 tags: [security, caller]
 ---
 
-Part of [[sec_hardening_plan]]. Closes **F6**. Blocked by [[sec_hardening_task_4]] — both rewrite `psPPIDComm`, and landing them in parallel would conflict.
+Part of [[sec_hardening_plan]]. Closes **F6**. Was blocked by [[sec_hardening_task_4]] — both rewrite `psPPIDComm` — which merged as #22, so this is unblocked. `psPPIDComm` now invokes a resolved absolute `ps` with a minimal environment; build on that rather than reinstating `exec.Command("ps", …)`.
 
 > **Revised after #17 narrowed opx to macOS only.** The `/proc/<pid>/exe`
 > half of this task is gone with the Linux support, along with
