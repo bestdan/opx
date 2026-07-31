@@ -143,13 +143,14 @@ func TestResolveHelper_IgnoresPATH(t *testing.T) {
 // TestResolveHelper_RequiresAbsoluteCandidates guards the compiled-in list:
 // a bare name would reintroduce PATH resolution at the exec.Command call.
 func TestResolveHelper_RequiresAbsoluteCandidates(t *testing.T) {
-	candidates := prompt.OsascriptCandidatesForTest()
-	if len(candidates) == 0 {
-		t.Fatal("candidate list is empty")
-	}
-	for _, c := range candidates {
-		if !filepath.IsAbs(c) {
-			t.Errorf("candidate %q is not absolute", c)
+	for _, candidates := range [][]string{prompt.OsascriptCandidatesForTest(), prompt.DefaultsCandidatesForTest()} {
+		if len(candidates) == 0 {
+			t.Fatal("candidate list is empty")
+		}
+		for _, c := range candidates {
+			if !filepath.IsAbs(c) {
+				t.Errorf("candidate %q is not absolute", c)
+			}
 		}
 	}
 }

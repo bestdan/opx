@@ -7,11 +7,13 @@
 // The dialog is drawn by osascript (AppleScript).  opx is macOS-only; there
 // is no fallback backend.
 //
-// osascript is never located via PATH. PATH belongs to the process opx is
-// prompting the user about, so a caller able to put a binary named
-// "osascript" ahead of the real one would choose what the dialog answers —
-// and a helper that exits 0 is indistinguishable from the user clicking
-// Allow. It is resolved from a compiled-in absolute path; see resolveHelper.
+// No binary on the dialog path is located via PATH. PATH belongs to the
+// process opx is prompting the user about, so a caller able to put a binary
+// named "osascript" ahead of the real one would choose what the dialog
+// answers — and a helper that exits 0 is indistinguishable from the user
+// clicking Allow. Helpers are resolved from compiled-in absolute paths; see
+// resolveHelper. That covers osascript and the `defaults` appearance query
+// isDarkMode runs before the dialog is drawn.
 package prompt
 
 import (
@@ -79,9 +81,15 @@ type systemConfirmer struct {
 	stderr io.Writer
 }
 
-// osascriptCandidates is the only location the dialog backend is accepted
-// from. Absolute by construction: the point is to never consult PATH.
-var osascriptCandidates = []string{"/usr/bin/osascript"}
+// These are the only locations a helper on the dialog path is accepted from.
+// Absolute by construction: the point is to never consult PATH.
+// defaultsCandidates covers isDarkMode's appearance query — it cannot answer
+// the dialog, but it is exec'd before the dialog is drawn, so it is resolved
+// the same way the backend itself is.
+var (
+	osascriptCandidates = []string{"/usr/bin/osascript"}
+	defaultsCandidates  = []string{"/usr/bin/defaults"}
+)
 
 // resolveHelper returns the first candidate that is a regular, executable file
 // which is not group- or world-writable, or "" when none qualifies. The

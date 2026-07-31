@@ -4,6 +4,7 @@ package prompt
 // in the prompt_test package without making it part of the public API.
 func ResolveHelperForTest(candidates []string) string { return resolveHelper(candidates) }
 
-// OsascriptCandidatesForTest exposes the compiled-in helper location list so
-// tests can assert it stays absolute.
+// OsascriptCandidatesForTest and DefaultsCandidatesForTest expose the
+// compiled-in helper location lists so tests can assert they stay absolute.
 func OsascriptCandidatesForTest() []string { return osascriptCandidates }
+func DefaultsCandidatesForTest() []string  { return defaultsCandidates }
