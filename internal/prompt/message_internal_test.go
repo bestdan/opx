@@ -180,6 +180,40 @@ func TestDialogTitle_BenignUnchanged(t *testing.T) {
 	}
 }
 
+// TestDialogScript_NonPrintableNeverReachesAppleScriptSource pins the second
+// half of the escaping guard, which sanitizeDisplay does not provide.
+//
+// sanitizeDisplay covers C0/C1 only. A Unicode bidi override (U+202E) is
+// neither, so it reaches dialogScript intact — and a raw U+202E inside the
+// AppleScript string literal would render, reordering the displayed path so a
+// URI can lie about which secret is being requested. What stops it is the %q
+// dialogScript wraps the body and title in: Go escapes any non-printable rune
+// to a literal \uXXXX, AppleScript's parser rejects that token, osascript
+// exits non-zero, and confirmDarwin maps that to ErrDenied. Fails closed.
+//
+// The assertion is on the generated source, not on osascript's behaviour, so
+// this stays a hermetic unit test (AGENTS.md forbids shelling out to a real
+// osascript). Replace either %q with plain interpolation and this fails.
+func TestDialogScript_NonPrintableNeverReachesAppleScriptSource(t *testing.T) {
+	// Written as a Go escape, not the literal character: a raw U+202E in this
+	// file would reorder the source for whoever reads it next.
+	const rlo = "\u202e"
+
+	got := dialogScript(Request{
+		Bindings: []Binding{{URI: "op://Private/prod/root" + rlo + "gnip"}},
+		Caller:   "claude" + rlo + "hs.yolped",
+	}, "with icon caution")
+
+	if strings.Contains(got, rlo) {
+		t.Errorf("raw U+202E reached the AppleScript source — a bidi override in the "+
+			"dialog can reorder the displayed URI: %q", got)
+	}
+	if !strings.Contains(got, "\\u202e") {
+		t.Errorf("expected the override to survive as an escaped \\u202e token "+
+			"(which AppleScript rejects, so the request fails closed): %q", got)
+	}
+}
+
 // TestMessage_BenignInputUnchanged is the regression guard on the sanitizer:
 // normal URIs, unicode item names, and shell variable names must render
 // byte-for-byte as before. A sanitizer that mangles ordinary output trains
