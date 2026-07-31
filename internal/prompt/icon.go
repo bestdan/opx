@@ -100,8 +100,18 @@ func recolor(src image.Image, fg color.NRGBA) image.Image {
 // exits non-zero in light mode (the key is absent). Any error → light, which
 // matches the historical default and is safe on non-darwin builds (where
 // `defaults` either fails or doesn't exist).
+//
+// The binary is resolved from an absolute path, not PATH, for the same reason
+// the dialog backends are: this runs before the dialog is drawn, so a planted
+// `defaults` would be exec'd by opx on the confirm path. It cannot forge an
+// approval — only the icon color depends on its output — but an unresolvable
+// or hostile helper should cost us the icon, not a hang.
 func isDarkMode() bool {
-	out, err := exec.Command("defaults", "read", "-g", "AppleInterfaceStyle").Output()
+	bin := resolveHelper(defaultsCandidates)
+	if bin == "" {
+		return false
+	}
+	out, err := exec.Command(bin, "read", "-g", "AppleInterfaceStyle").Output()
 	if err != nil {
 		return false
 	}

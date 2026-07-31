@@ -8,7 +8,11 @@ func IsUninterestingForTest(comm string) bool { return isUninteresting(comm) }
 // RenderArgvForTest exposes the unexported argv-rendering/path-shortening
 // helper to tests in the caller_test package without making it part of the
 // public API.
-func RenderArgvForTest(argv []string) string { return renderArgv(argv) }
+func RenderArgvForTest(argv []string) string { return renderAncestorArgv(argv) }
+
+// MaxChildCommandForTest exposes the child-command display budget so tests
+// can build an argv that straddles it without hardcoding the number.
+func MaxChildCommandForTest() int { return maxChildCommand }
 
 // TruncateForTest exposes the unexported truncation helper to tests in the
 // caller_test package without making it part of the public API.
