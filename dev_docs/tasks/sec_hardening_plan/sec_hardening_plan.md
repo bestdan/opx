@@ -65,10 +65,12 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 5. [[sec_hardening_task_5]] — Resolve `op` once, reject untrusted locations, fail closed (F5).
 6. ~~[[sec_hardening_task_6]] — Render the run-mode child command faithfully~~ — **merged, #16** (+ #19).
 7. [[sec_hardening_task_7]] — Base caller identity on the executable path, not the self-asserted `comm` (F6).
-8. [[sec_hardening_task_8]] — Record the merged invariants and the residual risk in `AGENTS.md` and `README.md`. **Next up.**
+8. ~~[[sec_hardening_task_8]] — Record the merged invariants and the residual risk~~ — **merged, #20**.
 9. [[sec_hardening_task_9]] — Graduate the durable decisions to `dev_docs/security-hardening.md` and delete this plan folder.
 
-Remaining order: **8** (open window, merged code is undocumented), then **4**, then **7** (blocked by 4 — both rewrite `psPPIDComm`), then **2**, then **5** once its open question is answered. Task 9 closes the plan out.
+Remaining order: **4** (`ps`, small, unblocks 7), then **7** (blocked by 4 — both rewrite `psPPIDComm`; needs open question 3 answered), then **2**, then **5** once its open question is answered. Task 9 closes the plan out.
+
+Four of the eight code/doc tasks are merged: 1, 3, 6, 8. Findings closed so far: F1, F2, F4, F7, F8, F9, F10. Outstanding: **F3** (task 4), **F5** (task 5), **F6** (task 7).
 
 ## Open questions
 
@@ -77,4 +79,8 @@ Remaining order: **8** (open window, merged code is undocumented), then **4**, t
 3. **Should the dialog header show the full executable path (task 7), or keep the short name and put the path in the detail line?** Full paths in the header are unambiguous but noisy for the common case (`"claude"` becomes `"/usr/local/bin/claude"`). The plan currently keeps the short name in the header and adds the resolved path to the detail line. **Still open — task 7 needs this before implementation.**
 4. ~~**Is a wider truncation limit acceptable for the run-mode line (task 6)?**~~ **Answered by #16 merging**: 300 runes for the child line, explicit `+N more arguments` elision, `argv[0]` never truncated.
 5. **F3's panel is worth a second look.** Two of that finding's three verifiers were flagged for out-of-scope behaviour during the scan. The finding rests on four lines of `internal/caller/caller.go` and reads as sound, and the macOS narrowing has since made it *more* load-bearing rather than less — `ps` is now the only identity source. Flagged for the record; it does not change the plan.
-6. **New: what is the durable lesson for display escaping?** Two follow-up fixes on this plan (`0bb2506`, #19) each restored a property the original author believed was held — a missed interpolation site and an unescaped backslash. Both are quoting/escaping bugs found *after* review by someone reading the merged code. Task 8 should write the rule down; whether it also warrants a single shared display-escaping helper, rather than the current per-site discipline, is worth deciding rather than drifting into.
+6. **What is the durable lesson for display escaping?** Two follow-up fixes on this plan (`0bb2506`, #19) each restored a property the original author believed was held — a missed interpolation site and an unescaped backslash. Both are quoting/escaping bugs found *after* review by someone reading the merged code. Task 8 wrote the rule down (#20).
+
+   **Partly answered.** The specific gap I worried about — bidi overrides slipping past `sanitizeDisplay` — does not exist on the supported platform. `%q` wraps the entire AppleScript body and title, so a U+202E in a URI becomes a literal backslash-u escape, AppleScript's parser rejects the script, `osascript` exits non-zero, and `confirmDarwin` maps that to `ErrDenied`. Verified directly: the escape yields `syntax error … (-2741)`, rc 1. So the layering is `sanitizeDisplay` for C0/C1 (rendered visibly) and `%q` for everything else non-printable (fails closed). That is a real design, not an accident, and it argues **against** a single shared escaper: the two layers deliberately fail differently.
+
+   Still open: whether that layering should be stated in `AGENTS.md` invariant 6, which currently describes only `sanitizeDisplay`. Cheap to add and it would stop someone "simplifying" the `%q` away.

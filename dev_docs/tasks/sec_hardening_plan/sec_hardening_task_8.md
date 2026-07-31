@@ -2,8 +2,10 @@
 title: Record the new trust invariants and the residual risk in AGENTS.md and README.md
 priority: high
 size: 2
-status: new
+status: done
 created: 2026-07-31
+completed: 2026-07-31
+completed_by: "#20"
 source_branch: bestdan/security-scan-fixes
 parent: sec_hardening
 related_files:
@@ -25,6 +27,22 @@ Part of [[sec_hardening_plan]]. No finding of its own — this is what stops the
 > Evidence this is not hypothetical: `0bb2506` and #19 were both follow-up
 > fixes to merged work on this plan, each restoring a property the original
 > author (me) believed was already held.
+
+> **Done — merged as #20.** Co-review caught two overstatements in the README
+> threat model before merge, both the exact failure this task argues against:
+> a run-mode bullet claiming arguments are never truncated (contradicting
+> invariant 8 in the same diff) and a PATH bullet whose safety condition was
+> near-vacuous. Writing an accurate threat model turns out to be as easy to
+> get wrong as the code it describes — which is an argument for this task, not
+> against it.
+>
+> One correction came out of the same review: **`sanitizeDisplay` is not the
+> only guard on non-printable runes.** `%q` wraps the whole AppleScript body
+> and title, so a bidi override (U+202E) in a URI is rendered as a literal
+> backslash-u escape, AppleScript's parser rejects it, `osascript` exits
+> non-zero, and
+> `confirmDarwin` maps that to `ErrDenied`. It fails closed rather than
+> forging the dialog. This moots most of open question 6 — see the plan.
 
 ## Context
 
