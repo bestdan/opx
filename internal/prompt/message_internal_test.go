@@ -326,3 +326,42 @@ func TestMessage_BatchWithoutNamesStillListsURIs(t *testing.T) {
 		t.Errorf("no Name set, but message contained $: %q", got)
 	}
 }
+
+func TestDialogScript_BeepsBeforeDisplayingDialog(t *testing.T) {
+	// The beep is the tamper-evidence signal: it must fire as its own
+	// statement ahead of the dialog, not somewhere inside the dialog's
+	// arguments where AppleScript would treat it as text.
+	got := dialogScript(Request{
+		Bindings: []Binding{{URI: "op://V/I/f"}},
+		Caller:   "bash",
+	}, "with icon caution")
+
+	if !strings.HasPrefix(got, "beep 3\n") {
+		t.Fatalf("script does not open with a beep statement: %q", got)
+	}
+	beep := strings.Index(got, "beep")
+	dialog := strings.Index(got, "display dialog")
+	if dialog < 0 {
+		t.Fatalf("script has no display dialog: %q", got)
+	}
+	if beep > dialog {
+		t.Errorf("beep at %d comes after display dialog at %d: %q", beep, dialog, got)
+	}
+}
+
+func TestDialogScript_BeepIsNotConfigurable(t *testing.T) {
+	// Pins the narrow thing it can actually pin: dialogScript emits the beep
+	// as a pure function of its arguments, consulting nothing else. It does
+	// not — and cannot — prove the beep is unsuppressible overall; a switch
+	// added in confirmDarwin, which is where one would naturally go, would
+	// leave this green. The guard against that is the AGENTS.md entry and
+	// review, not this test.
+	got := dialogScript(Request{
+		Bindings: []Binding{{URI: "op://V/I/f"}},
+		Caller:   "bash",
+	}, "with icon caution")
+
+	if !strings.Contains(got, "beep") {
+		t.Errorf("environment suppressed the beep: %q", got)
+	}
+}
