@@ -309,8 +309,56 @@ func firstInterestingIdx(chain []process) int {
 	return -1
 }
 
+// psCandidates is the only set of locations ps is accepted from. Absolute by
+// construction: PATH belongs to the process opx is about to describe to the
+// user, so a `ps` found there is the caller writing its own dialog. `ps` lives
+// at /bin/ps on macOS; /usr/bin/ps is a second candidate for robustness and
+// costs one stat.
+var psCandidates = []string{"/bin/ps", "/usr/bin/ps"}
+
+// psEnv is the environment both ps invocations run with, replacing the one opx
+// inherited. LC_ALL=C additionally pins ps's column formatting, which an
+// inherited locale does not guarantee.
+var psEnv = []string{"PATH=/bin:/usr/bin", "LC_ALL=C"}
+
+// psPath returns the first candidate that is a regular, executable file which
+// is not group- or world-writable, or "" when none qualifies. Callers treat ""
+// as a lookup failure, which degrades to a caller identity of "unknown".
+//
+// This is a deliberate duplicate of resolveHelper in internal/prompt rather
+// than a shared helper: caller importing prompt would invert the dependency
+// (main composes both), and the two candidate lists have no reason to move
+// together.
+//
+// The check rejects a ps another account could have written to directly. It
+// does not examine the containing directory, so a clean file in a writable
+// directory is accepted even though it could be replaced by unlink-and-
+// recreate. Both real candidates are on the SIP-sealed system volume, where no
+// account can unlink or recreate anything, so reaching that gap means SIP is
+// already defeated.
+func psPath(candidates []string) string {
+	for _, path := range candidates {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		mode := info.Mode().Perm()
+		if mode&0o111 == 0 || mode&0o022 != 0 {
+			continue
+		}
+		return path
+	}
+	return ""
+}
+
 func psPPIDComm(pid int) (ppid int, comm string, ok bool) {
-	out, err := exec.Command("ps", "-o", "ppid=,comm=", "-p", strconv.Itoa(pid)).Output()
+	ps := psPath(psCandidates)
+	if ps == "" {
+		return 0, "", false
+	}
+	cmd := exec.Command(ps, "-o", "ppid=,comm=", "-p", strconv.Itoa(pid))
+	cmd.Env = psEnv
+	out, err := cmd.Output()
 	if err != nil {
 		return 0, "", false
 	}
@@ -327,7 +375,13 @@ func psPPIDComm(pid int) (ppid int, comm string, ok bool) {
 }
 
 func psArgv(pid int) ([]string, bool) {
-	out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
+	ps := psPath(psCandidates)
+	if ps == "" {
+		return nil, false
+	}
+	cmd := exec.Command(ps, "-o", "args=", "-p", strconv.Itoa(pid))
+	cmd.Env = psEnv
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, false
 	}

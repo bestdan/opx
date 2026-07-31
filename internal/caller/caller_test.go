@@ -1,6 +1,8 @@
 package caller_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -347,5 +349,136 @@ func TestTruncate(t *testing.T) {
 				t.Errorf("TruncateForTest result has %d runes, want <= %d", n, tc.n)
 			}
 		})
+	}
+}
+
+// writeFakePS creates a file at dir/name with the given permission bits and
+// returns its path. It stands in for the ps binary; nothing execs it.
+func writeFakePS(t *testing.T, dir, name string, perm os.FileMode) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho '1 claude'\n"), perm); err != nil {
+		t.Fatalf("writing fake ps: %v", err)
+	}
+	// WriteFile's perm is masked by umask; set the bits we actually asked for.
+	if err := os.Chmod(path, perm); err != nil {
+		t.Fatalf("chmod fake ps: %v", err)
+	}
+	return path
+}
+
+// TestPSPath_Rejects covers every way a candidate fails to qualify. ps is the
+// only source of caller identity, so a ps another account could have written
+// gets to name whichever program the dialog attributes the read to.
+func TestPSPath_Rejects(t *testing.T) {
+	dir := t.TempDir()
+
+	subdir := filepath.Join(dir, "adir")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		candidate string
+	}{
+		{"missing", filepath.Join(dir, "nope")},
+		{"directory", subdir},
+		{"not executable", writeFakePS(t, dir, "noexec", 0o644)},
+		{"group writable", writeFakePS(t, dir, "grpw", 0o775)},
+		{"world writable", writeFakePS(t, dir, "worldw", 0o757)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := caller.PSPathForTest([]string{tc.candidate}); got != "" {
+				t.Errorf("psPath accepted %s candidate: %q", tc.name, got)
+			}
+		})
+	}
+}
+
+// TestPSPath_AcceptsCleanExecutable is the positive case: a regular 0755 file
+// is what the packaged /bin/ps looks like.
+func TestPSPath_AcceptsCleanExecutable(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFakePS(t, dir, "ps", 0o755)
+
+	if got := caller.PSPathForTest([]string{path}); got != path {
+		t.Errorf("psPath() = %q, want %q", got, path)
+	}
+}
+
+// TestPSPath_FirstMatchWins pins the preference order: candidates are tried in
+// list order, and an unusable earlier entry is skipped rather than aborting.
+func TestPSPath_FirstMatchWins(t *testing.T) {
+	dir := t.TempDir()
+	bad := writeFakePS(t, dir, "bad", 0o666)
+	first := writeFakePS(t, dir, "first", 0o755)
+	second := writeFakePS(t, dir, "second", 0o755)
+
+	if got := caller.PSPathForTest([]string{first, second}); got != first {
+		t.Errorf("psPath() = %q, want first candidate %q", got, first)
+	}
+	if got := caller.PSPathForTest([]string{bad, second}); got != second {
+		t.Errorf("psPath() skipped past unusable candidate to %q, want %q", got, second)
+	}
+}
+
+// TestPSPath_IgnoresPATH is the finding this change exists for: a ps reachable
+// only through PATH must never be selected. PATH is set by the process opx is
+// prompting the user about, so a "ps" found there is the caller choosing the
+// name the dialog attributes the secret request to.
+func TestPSPath_IgnoresPATH(t *testing.T) {
+	dir := t.TempDir()
+	writeFakePS(t, dir, "ps", 0o755)
+	t.Setenv("PATH", dir)
+
+	if got := caller.PSPathForTest([]string{"/nonexistent/ps"}); got != "" {
+		t.Errorf("psPath consulted PATH and returned %q, want \"\"", got)
+	}
+}
+
+// TestPSCandidates_AreAbsolute guards the compiled-in list: a bare name would
+// reintroduce PATH resolution at the exec.Command call.
+func TestPSCandidates_AreAbsolute(t *testing.T) {
+	candidates := caller.PSCandidatesForTest()
+	if len(candidates) == 0 {
+		t.Fatal("ps candidate list is empty")
+	}
+	for _, c := range candidates {
+		if !filepath.IsAbs(c) {
+			t.Errorf("candidate %q is not absolute", c)
+		}
+	}
+}
+
+// TestPSEnv_IsMinimal pins the replacement environment. The point is that it
+// replaces the inherited one rather than extending it, so the caller cannot
+// steer ps through the environment either.
+func TestPSEnv_IsMinimal(t *testing.T) {
+	want := []string{"PATH=/bin:/usr/bin", "LC_ALL=C"}
+	got := caller.PSEnvForTest()
+	if len(got) != len(want) {
+		t.Fatalf("psEnv = %q, want exactly %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("psEnv[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestName_UnknownWhenNoPS is the degradation safety net. Since opx narrowed to
+// macOS, ps is the only source of caller identity — there is no second path to
+// fall back on — so when no trusted ps resolves, the honest answer is
+// "unknown", not a hang, a panic, or a name from an untrusted binary.
+func TestName_UnknownWhenNoPS(t *testing.T) {
+	caller.WithPSCandidatesForTest(t, []string{"/nonexistent/ps"})
+
+	if got := caller.Name(); got != "unknown" {
+		t.Errorf("Name() = %q with no resolvable ps, want %q", got, "unknown")
+	}
+	if got := caller.Describe(); got != "unknown" {
+		t.Errorf("Describe() = %q with no resolvable ps, want %q", got, "unknown")
 	}
 }
