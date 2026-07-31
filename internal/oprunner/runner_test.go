@@ -23,8 +23,7 @@ func withEmptyPATH(t *testing.T) {
 
 // withFakeOp installs a shell-script `op` in a fresh temp dir and prepends that
 // dir to PATH for the duration of the test. The script body is appended after
-// the `#!/bin/sh` shebang. macOS and Linux runners both have /bin/sh; the
-// project does not target Windows.
+// the `#!/bin/sh` shebang, which every macOS runner has.
 func withFakeOp(t *testing.T, script string) {
 	t.Helper()
 	dir := t.TempDir()

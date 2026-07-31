@@ -1,26 +1,24 @@
-// Package prompt shows a platform-native confirmation dialog before opx reads
-// a secret.  The dialog mimics the biometric unlock UI by displaying:
+// Package prompt shows a native macOS confirmation dialog before opx reads a
+// secret.  The dialog mimics the biometric unlock UI by displaying:
 //   - which op:// URI(s) are being requested
 //   - which environment variable each URI will be bound to (when applicable)
 //   - which process is requesting it
 //
-// On macOS it uses osascript (AppleScript); on Linux it tries zenity and falls
-// back to a /dev/tty prompt.
+// The dialog is drawn by osascript (AppleScript).  opx is macOS-only; there
+// is no fallback backend.
 package prompt
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 )
 
 // ErrDenied is returned by Confirm when the user explicitly denies access,
-// when no UI/TTY is available to ask, or when the prompt tool itself fails.
+// when no UI is available to ask, or when the prompt tool itself fails.
 // All failure modes collapse to ErrDenied so the caller fails closed: a
 // secret-gating prompt that can't ask the user must not proceed.
 var ErrDenied = errors.New("access denied by user")
@@ -63,11 +61,11 @@ type Confirmer interface {
 	Confirm(req Request) error
 }
 
-// New returns the default Confirmer for the current platform.  Subprocess
-// stderr (osascript / zenity) is forwarded to os.Stderr.
+// New returns the default Confirmer.  osascript's stderr is forwarded to
+// os.Stderr.
 func New() Confirmer { return &systemConfirmer{stderr: os.Stderr} }
 
-// NewWithStderr returns a Confirmer that writes osascript/zenity stderr to w.
+// NewWithStderr returns a Confirmer that writes osascript's stderr to w.
 // Pass io.Discard to silence the dialog backend's diagnostic output.
 func NewWithStderr(w io.Writer) Confirmer { return &systemConfirmer{stderr: w} }
 
@@ -76,12 +74,7 @@ type systemConfirmer struct {
 }
 
 func (s *systemConfirmer) Confirm(req Request) error {
-	switch runtime.GOOS {
-	case "darwin":
-		return confirmDarwin(req, s.stderr)
-	default:
-		return confirmLinux(req, s.stderr)
-	}
+	return confirmDarwin(req, s.stderr)
 }
 
 // message returns the human-readable body shown in the dialog.  For a single
@@ -90,14 +83,17 @@ func (s *systemConfirmer) Confirm(req Request) error {
 // lines, with the bound variable name appended when present.
 //
 // Invariant: every value interpolated into the returned body has passed
-// through sanitizeDisplay. confirmTTY writes this string to /dev/tty verbatim,
-// before the user is asked anything, so a control character surviving in a URI
-// or a caller name can clear the screen and repaint a forged dialog. The URI
-// is attacker-controlled in every input mode — argv, --env, and --env-file
-// values — since uri.IsOPURI checks only the op:// prefix and three non-empty
-// segments. Anything added to this function must be sanitized too — and the
-// same applies outside it: dialogTitle is the other interpolation the user
-// sees, and it sanitizes for its own reasons.
+// through sanitizeDisplay. confirmDarwin embeds this string in AppleScript
+// source via %q, so an unsanitized control character either breaks the script
+// (a raw ESC renders as \x1b, which AppleScript rejects — the dialog never
+// appears and opx reports a denial) or survives into the rendered body (\r,
+// \n, and \t are real escapes to AppleScript, letting a caller pad or
+// line-break the text the user is approving). The URI is attacker-controlled
+// in every input mode — argv, --env, and --env-file values — since
+// uri.IsOPURI checks only the op:// prefix and three non-empty segments.
+// Anything added to this function must be sanitized too — and the same
+// applies outside it: dialogTitle is the other interpolation the user sees,
+// and it sanitizes for the same reasons.
 func message(req Request) string {
 	detail := callerDetailLine(req)
 	caller := sanitizeDisplay(req.Caller)
@@ -186,8 +182,10 @@ func callerDetailLine(req Request) string {
 }
 
 // sanitizeDisplay prevents process-controlled text from changing the
-// confirmation UI when it is printed to /dev/tty. C0 and C1 control
-// characters are rendered as visible escapes instead of being passed through.
+// confirmation UI. C0 and C1 control characters are rendered as visible
+// escapes instead of being passed through to the AppleScript source that
+// confirmDarwin builds — see message and dialogTitle for what each of them
+// would otherwise break.
 //
 // Every dialog-body interpolation goes through this — caller name, caller
 // detail, URIs, and bound variable names alike. It was introduced for the
@@ -213,8 +211,7 @@ func sanitizeDisplay(s string) string {
 // user clicks Deny (or presses Escape), which is what we check below.
 //
 // `giving up after 60` auto-dismisses (treated as denial) if the user walks
-// away — fail-closed safety net for unattended terminals. macOS-only: the
-// zenity and /dev/tty paths block until the user responds.
+// away — fail-closed safety net for unattended terminals.
 func confirmDarwin(req Request, stderr io.Writer) error {
 	iconClause := "with icon caution"
 	if path := writeIconFile(); path != "" {
@@ -243,73 +240,4 @@ func confirmDarwin(req Request, stderr io.Writer) error {
 		return ErrDenied
 	}
 	return nil
-}
-
-// confirmLinux tries zenity first, then falls back to a /dev/tty prompt.
-func confirmLinux(req Request, stderr io.Writer) error {
-	if _, err := exec.LookPath("zenity"); err == nil {
-		return confirmZenity(req, stderr)
-	}
-	return confirmTTY(req)
-}
-
-// confirmZenity shows a GTK dialog using the zenity helper.
-//
-// zenity interprets Pango markup in --text, so &, <, and > in the URI or
-// caller name would either render wrong or cause zenity to refuse the
-// dialog. Escape them before passing the message in.
-func confirmZenity(req Request, stderr io.Writer) error {
-	cmd := exec.Command(
-		"zenity",
-		"--question",
-		"--title=opx - Secret Access Request",
-		"--text="+pangoEscape(message(req)),
-		"--ok-label=Allow",
-		"--cancel-label=Deny",
-		"--width=500",
-	)
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
-		return ErrDenied
-	}
-	return nil
-}
-
-// pangoEscape replaces the three characters Pango treats as markup with
-// their entity equivalents. Order matters: & must be replaced first so the
-// entities introduced for < and > aren't double-escaped.
-func pangoEscape(s string) string {
-	r := strings.NewReplacer(
-		"&", "&amp;",
-		"<", "&lt;",
-		">", "&gt;",
-	)
-	return r.Replace(s)
-}
-
-// confirmTTY prompts directly on the controlling terminal, bypassing any
-// stdin/stdout redirection.  This handles headless or SSH sessions where no
-// GUI is available.
-func confirmTTY(req Request) error {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return ErrDenied
-	}
-	defer tty.Close()
-
-	fmt.Fprintf(tty, "\n+-----------------------------------------+\n")
-	fmt.Fprintf(tty, "|       opx - Secret Access Request       |\n")
-	fmt.Fprintf(tty, "+-----------------------------------------+\n\n")
-	fmt.Fprintln(tty, message(req))
-	fmt.Fprintf(tty, "\nAllow? [y/N]: ")
-
-	scanner := bufio.NewScanner(tty)
-	if !scanner.Scan() {
-		return ErrDenied
-	}
-	answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
-	if answer == "y" || answer == "yes" {
-		return nil
-	}
-	return ErrDenied
 }

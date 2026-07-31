@@ -7,7 +7,9 @@ this repository. Humans should read `README.md` first.
 
 `opx` is a small Go CLI that wraps the 1Password `op` binary to force a
 biometric prompt on every secret read and to invalidate the `op` session
-token after every invocation. It is a **security tool**: changes that
+token after every invocation. It targets **macOS only** — the confirm
+dialog is AppleScript and the caller lookup shells out to `ps`; other
+platforms are not supported or tested. It is a **security tool**: changes that
 weaken the trust boundary need to be flagged explicitly, not slipped in
 as cleanup.
 
@@ -17,10 +19,10 @@ as cleanup.
 main.go                 # entry point; argument parsing, exit codes, signal & panic handling
 main_test.go            # end-to-end tests of run() with fake Runner/Confirmer
 run_subcommand_test.go  # tests for `opx run` (fake Runner/Confirmer/Spawner)
-internal/caller/        # parent process name (ppid → /proc/.../comm or `ps`)
+internal/caller/        # parent process name (ppid → `ps`)
 internal/envfile/       # dotenv-style NAME=VALUE parser used by `opx run --env-file`
 internal/oprunner/      # `op read` / `op signout` subprocess wrapper (Runner interface)
-internal/prompt/        # platform-native confirm dialog (osascript / zenity / /dev/tty)
+internal/prompt/        # native macOS confirm dialog (osascript)
 internal/prompt/assets/ # embedded white-on-transparent PNG (Go recolors at runtime); build/ has the Python source — `make icon`
 internal/shellquote/    # POSIX single-quote escaper for --env output
 internal/spawn/         # exec wrapper used by `opx run` (Spawner interface)
@@ -50,7 +52,7 @@ make test              # unit tests (hermetic; what CI runs)
 make test-integration  # local-only: hits real op binary, requires scripts/.env.example
 make test-all          # test + test-integration
 make lint              # go vet ./...
-make cross             # CGO_ENABLED=0 builds for darwin-arm64, darwin-amd64, linux-amd64
+make cross             # CGO_ENABLED=0 builds for darwin-arm64, darwin-amd64
 make clean
 ```
 
@@ -89,8 +91,8 @@ Go 1.24+ is required (see `go.mod`).
   through those interfaces rather than calling the real `op` or `osascript`
   directly. See `main_test.go` for the `fakeRunner` / `fakeConfirmer`
   pattern.
-- Don't write tests that shell out to a real `op`, `osascript`, or
-  `zenity`; CI will not have them.
+- Don't write tests that shell out to a real `op` or `osascript`; CI
+  will not have them.
 
 ## Security invariants — do not regress
 

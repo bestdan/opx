@@ -2,7 +2,6 @@ package prompt_test
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/bestdan/opx/internal/prompt"
@@ -49,37 +48,5 @@ func TestNew_ReturnsConfirmer(t *testing.T) {
 	c := prompt.New()
 	if c == nil {
 		t.Error("prompt.New() returned nil")
-	}
-}
-
-// TestPangoEscape exercises the escape applied before passing dialog text to
-// zenity. We invoke it via the exported PangoEscapeForTest seam (see
-// export_test.go) to keep the helper unexported.
-func TestPangoEscape(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"plain", "plain"},
-		{"a & b", "a &amp; b"},
-		{"<x>", "&lt;x&gt;"},
-		{"AT&T <op://x>", "AT&amp;T &lt;op://x&gt;"},
-		{"&lt;", "&amp;lt;"}, // already-entity must not be re-decoded
-	}
-	for _, tc := range cases {
-		got := prompt.PangoEscapeForTest(tc.in)
-		if got != tc.want {
-			t.Errorf("pangoEscape(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-// TestPangoEscape_CallerDetailWithMarkupChars confirms that a CallerDetail
-// containing Pango markup characters (e.g. a child process argv with "<" or
-// "&") comes out escaped once run through the same pangoEscape path zenity
-// uses — the via line isn't a special case exempted from escaping.
-func TestPangoEscape_CallerDetailWithMarkupChars(t *testing.T) {
-	got := prompt.PangoEscapeForTest("via claude › node script.js --filter=a&b <input>")
-	if !strings.Contains(got, "&amp;b") || !strings.Contains(got, "&lt;input&gt;") {
-		t.Errorf("pangoEscape did not escape via-line markup chars: %q", got)
 	}
 }

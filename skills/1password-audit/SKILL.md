@@ -14,7 +14,7 @@ disallowed-tools:
   - Edit
   - Write
   - NotebookEdit
-version: 1.1.1
+version: 1.1.2
 ---
 
 # 1Password Secrets Audit

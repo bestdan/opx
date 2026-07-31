@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -54,7 +55,7 @@ var version = "dev"
 
 // diag is the destination for diagnostic stderr output. It defaults to
 // io.Discard (silent) and is flipped to os.Stderr when --verbose / OPX_VERBOSE
-// is set. Subprocess stderr (op, osascript, zenity) and our own logging both
+// is set. Subprocess stderr (op, osascript) and our own logging both
 // route through this writer. main() is the only place that mutates it.
 //
 // Set-once-in-main, then read-only for the rest of execution — no races.
@@ -87,6 +88,14 @@ func main() {
 	if wantVersion(os.Args[1:]) {
 		printVersion(os.Stdout, os.Stderr, parseVersion(version), wantCheck(os.Args[1:]))
 		os.Exit(exitSuccess)
+	}
+	// opx is macOS-only: the confirmation dialog is an AppleScript dialog and
+	// the caller lookup shells out to macOS `ps`. Say so plainly rather than
+	// letting the missing osascript surface as "access denied by user", which
+	// reads as a decision the user made.
+	if runtime.GOOS != "darwin" {
+		fmt.Fprintf(os.Stderr, "opx: unsupported platform %q — opx runs on macOS only\n", runtime.GOOS)
+		os.Exit(exitUsage)
 	}
 	verbose, args := extractVerbose(os.Args[1:])
 	if verbose {

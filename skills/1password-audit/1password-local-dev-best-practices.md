@@ -107,7 +107,7 @@ eval "$(opx \
 - **Replaces `op read`** for one-off interactive reads. There is no reason to prefer raw `op read` at a terminal.
 - **`--env` mode is not a replacement for `op run`.** Variables `eval`'d into your shell live as long as the shell and are visible to every child process; `op run` scopes them to one subprocess. Prefer `op run` for launching an app (Section 2), and reach for `opx --env` when you genuinely need the values in the interactive shell itself.
 - **`op run` still caches a session.** If you want the same teardown after a run, follow it with `op signout --all`.
-- **Not for CI or headless environments.** `opx` needs a GUI dialog (`osascript` / `zenity`) or a TTY; with neither available the request is denied by design. Automation should use a scoped service account token with `op run` (Section 1).
+- **macOS only, and not for CI or headless environments.** `opx` needs macOS and a GUI dialog (`osascript`); without one the request is denied by design. Automation should use a scoped service account token with `op run` (Section 1).
 
 **Multi-account caveat:** `opx` deliberately takes no `--account` flag — it passes the URI straight to `op read`, which resolves against the default account. In a multi-account setup (Section 8), export `OP_ACCOUNT` in your shell profile so `opx` and any bare `op` command target the right account:
 
@@ -271,7 +271,7 @@ The 1Password model limits blast radius at multiple layers:
 | Scoped service accounts    | Compromised token pivoting to other vaults       | Token only reaches its assigned vault; can't escalate      |
 | Secret references in files | Compromised dependency reading `.env`            | `op://` refs are useless without CLI + auth                |
 | Shell history protection   | `export SECRET=...` captured in history          | `direnv` + `from_op` never writes secrets to shell         |
-| Subprocess scoping         | Secrets persisting in history, dotfiles, or the shell env | `op run` scopes values to one subprocess — never on disk, never inherited by the shell. A same-uid process can still read `/proc/<pid>/environ`; the boundary is persistence, not process isolation. |
+| Subprocess scoping         | Secrets persisting in history, dotfiles, or the shell env | `op run` scopes values to one subprocess — never on disk, never inherited by the shell. A same-uid process can still inspect another process's environment; the boundary is persistence, not process isolation. |
 | Pre-commit scanning        | Developer accidentally commits a resolved secret | `detect-secrets` blocks the commit before it reaches git   |
 
 **For AI coding agents specifically** (Claude, Cursor, Copilot):

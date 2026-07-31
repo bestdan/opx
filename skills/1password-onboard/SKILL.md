@@ -11,7 +11,7 @@ disallowed-tools:
   - Edit
   - Write
   - NotebookEdit
-version: 1.1.1
+version: 1.1.2
 ---
 
 # 1Password Developer Onboarding
@@ -84,7 +84,7 @@ This runbook gets you set up with secrets access for **{project-name}**. Follow 
 
 ## Prerequisites
 
-- macOS or Linux
+- macOS (`opx` is macOS-only)
 - [1Password](https://1password.com/downloads/) desktop app installed and signed in to `{account}`
 - Your 1Password account has been provisioned — if not, contact {access-contact or "your team lead"}
 
@@ -118,7 +118,7 @@ sudo mv opx /usr/local/bin/          # or: mv opx ~/.local/bin/
 opx                                  # prints usage, exit code 2 — install is good
 ```
 
-Requires Go 1.24+ and the `op` CLI above. On macOS, clear the quarantine flag if Gatekeeper blocks the unsigned binary: `xattr -d com.apple.quarantine "$(which opx)"`.
+Requires macOS, Go 1.24+, and the `op` CLI above. Clear the quarantine flag if Gatekeeper blocks the unsigned binary: `xattr -d com.apple.quarantine "$(which opx)"`.
 
 Verify the CLI is linked to your desktop app (required for biometric unlock):
 

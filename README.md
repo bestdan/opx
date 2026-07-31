@@ -4,6 +4,10 @@ A defensive wrapper around the 1Password CLI (`op`) that forces a fresh
 biometric prompt on every secret read and tears down the `op` session token
 immediately after.
 
+**macOS only.** `opx` is built and supported on macOS; the confirmation
+dialog is a native AppleScript dialog and the tool is not tested anywhere
+else.
+
 ## Why
 
 The `op` CLI caches a session token after a successful biometric unlock, so a
@@ -14,7 +18,7 @@ a window in which it can read arbitrary secrets without your knowledge.
 
 `opx` closes that window:
 
-1. Show a platform-native confirmation dialog disclosing **which URI** is
+1. Show a native macOS confirmation dialog disclosing **which URI** is
    being requested and **which process** is asking.
 2. Run `op read <uri>`, which triggers a fresh biometric prompt.
 3. On exit — success, failure, panic, or `SIGINT`/`SIGTERM` — run
@@ -27,6 +31,7 @@ residual session is left behind for another process to abuse.
 
 Prerequisites:
 
+- **macOS.** `opx` is macOS-only.
 - **Go 1.24 or newer.** Check with `go version`. If missing, install from
   [go.dev/dl](https://go.dev/dl/) or via Homebrew (`brew install go`).
 - **The 1Password CLI (`op`).** Check with `op --version`. If missing,
@@ -68,7 +73,7 @@ Step by step:
    source ~/.zshrc
    ```
 
-4. **(macOS only) Clear the quarantine attribute** so Gatekeeper doesn't
+4. **Clear the quarantine attribute** so Gatekeeper doesn't
    block the unsigned binary on first run:
 
    ```sh
@@ -177,7 +182,7 @@ Behavior:
 | 0    | Secret printed to stdout                            |
 | 1    | `op` failed or the read was interrupted             |
 | 2    | Usage error (no args, malformed URI)                |
-| 3    | Denied — dialog dismissed, timed out, or no GUI/TTY |
+| 3    | Denied — dialog dismissed, timed out, or no GUI    |
 
 Exit 3 is the user-intent path; every other failure collapses to exit 1.
 In all non-zero cases nothing reaches stdout — read `stderr` for the reason.
@@ -186,10 +191,10 @@ In all non-zero cases nothing reaches stdout — read `stderr` for the reason.
 
 - **`op` not on `PATH`.** `opx` shells out to `op`; if it isn't installed
   the read fails with an exec error. Install the 1Password CLI separately.
-- **No GUI prompt available.** On macOS `opx` requires `osascript`
-  (preinstalled). On Linux it tries `zenity` first and falls back to a
-  `/dev/tty` y/N prompt — if there is no TTY (e.g. a daemonized cron job)
-  the request is denied. Run `opx` interactively.
+- **No GUI prompt available.** `opx` requires `osascript` (preinstalled on
+  macOS) to show the dialog. If it can't run — a daemonized job with no
+  window server, for instance — the request is denied by design. Run `opx`
+  interactively.
 - **macOS Gatekeeper.** A locally built `opx` binary is unsigned; the
   first run from Finder will be blocked. Either run it from a terminal or
   remove the quarantine attribute: `xattr -d com.apple.quarantine ./opx`.
