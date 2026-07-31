@@ -350,13 +350,12 @@ func TestDialogScript_BeepsBeforeDisplayingDialog(t *testing.T) {
 }
 
 func TestDialogScript_BeepIsNotConfigurable(t *testing.T) {
-	// Regression guard for a deliberate design decision: the sound is a
-	// detection signal, so no caller-reachable input may suppress it. If a
-	// switch is ever added, this test should fail and force the argument to
-	// be had again rather than the behavior quietly regressing.
-	t.Setenv("OPX_SOUND", "0")
-	t.Setenv("OPX_NO_SOUND", "1")
-
+	// Pins the narrow thing it can actually pin: dialogScript emits the beep
+	// as a pure function of its arguments, consulting nothing else. It does
+	// not — and cannot — prove the beep is unsuppressible overall; a switch
+	// added in confirmDarwin, which is where one would naturally go, would
+	// leave this green. The guard against that is the AGENTS.md entry and
+	// review, not this test.
 	got := dialogScript(Request{
 		Bindings: []Binding{{URI: "op://V/I/f"}},
 		Caller:   "bash",

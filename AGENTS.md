@@ -156,8 +156,9 @@ explicitly in the PR description rather than burying it in a refactor.
   audible when the dialog opens unseen and would otherwise absorb a silent
   60-second timeout — and any opx-level switch, env var or config file,
   would be readable and writable by the very process opx is gating. macOS's
-  System Settings › Sound is the configuration surface, and it is the only
-  one a caller cannot reach. See `dialogScript` in `internal/prompt`.
+  System Settings › Sound is the configuration surface. A caller can reach
+  that too, but only by muting the machine globally and persistently, which
+  is the difference that matters. See `dialogScript` in `internal/prompt`.
 - Adding logging frameworks, config loaders, or CLI parsing libraries.
 - Introducing cgo (breaks `make cross`).
 - Caching the `op` session — that is exactly what this tool exists to
