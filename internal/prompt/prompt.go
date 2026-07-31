@@ -36,7 +36,10 @@ type Binding struct {
 // authorize.  All bindings in one Request are approved or denied together.
 type Request struct {
 	Bindings []Binding
-	Caller   string // executable name of the parent process
+	// Caller is the short label for the requesting process: the executable
+	// name of the nearest ancestor that is not a shell, terminal emulator, or
+	// multiplexer — frequently not the immediate parent (see caller.Name).
+	Caller string
 
 	// CallerDetail is the fully-rendered detail line shown under the dialog
 	// header (e.g. "via claude › python3 script.py" or "to run: python3
@@ -44,9 +47,12 @@ type Request struct {
 	// prefix — confirmAndRead uses "via " + caller.Describe(), runSubcommand
 	// uses "to run: " + the child argv — since only the caller knows whether
 	// it is describing an ancestor or a child about to be spawned.
-	// Suppressed by callerDetailLine when, after stripping any "X › "
-	// ancestor prefixes, what remains is equal to Caller: that means the
-	// line adds nothing beyond what the dialog header's %q already shows.
+	// A "via " line is suppressed by callerDetailLine when, after stripping
+	// that prefix and any "X › " ancestor prefixes, what remains is equal to
+	// Caller: that means the line adds nothing beyond what the dialog
+	// header's %q already shows. A "to run: " line is never suppressed — it
+	// names the child that will receive the secrets, which is a different
+	// process from the header's even when the two render identically.
 	CallerDetail string
 }
 
@@ -114,26 +120,25 @@ func message(req Request) string {
 	return b.String()
 }
 
-// detailPrefixes lists the wording prefixes callers put on a fully-rendered
-// CallerDetail line (see the Request.CallerDetail doc comment). Stripped
-// before comparing against Caller so the duplicate check below isn't fooled
-// by the wording.
-var detailPrefixes = []string{"via ", "to run: "}
+// viaPrefix is the wording prefix confirmAndRead puts on a CallerDetail line
+// describing the calling ancestry. Stripped before comparing against Caller
+// so the duplicate check below isn't fooled by the wording. Only "via "
+// details are ever suppressed — a "to run: " detail names the child about to
+// receive the secrets, which is a different process from the header's %q even
+// when the two render identically.
+const viaPrefix = "via "
 
 // callerDetailLine returns req.CallerDetail verbatim, or "" when it is empty
-// or adds nothing beyond the dialog header's %q. "Adds nothing" means: after
-// stripping a known wording prefix and any "X › " ancestor prefixes, what
-// remains equals Caller, case-insensitively.
+// or adds nothing beyond the dialog header's %q. "Adds nothing" means: it is
+// a "via " line and, after stripping that prefix and any "X › " ancestor
+// prefixes, what remains equals Caller, case-insensitively.
 func callerDetailLine(req Request) string {
 	if req.CallerDetail == "" {
 		return ""
 	}
-	stripped := req.CallerDetail
-	for _, p := range detailPrefixes {
-		if s, ok := strings.CutPrefix(stripped, p); ok {
-			stripped = s
-			break
-		}
+	stripped, isVia := strings.CutPrefix(req.CallerDetail, viaPrefix)
+	if !isVia {
+		return req.CallerDetail
 	}
 	if idx := strings.LastIndex(stripped, " › "); idx >= 0 {
 		stripped = stripped[idx+len(" › "):]

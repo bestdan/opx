@@ -140,6 +140,21 @@ func TestMessage_CallerDetailCaseInsensitiveDuplicate(t *testing.T) {
 	}
 }
 
+func TestMessage_CallerDetailRunModeMatchingCaller_NotSuppressed(t *testing.T) {
+	// `opx run ... -- claude` invoked from claude renders a child argv equal
+	// to Caller, but the two are different processes: the header names who
+	// asked, the detail names who receives the secrets. Suppressing this line
+	// would make the dialog indistinguishable from a plain read.
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerDetail: "to run: claude",
+	})
+	if !strings.Contains(got, "to run: claude") {
+		t.Errorf("message must keep a to-run line even when it matches Caller: %q", got)
+	}
+}
+
 func TestMessage_CallerDetailSetBatch(t *testing.T) {
 	bindings := []Binding{
 		{Name: "A", URI: "op://V/A/f"},

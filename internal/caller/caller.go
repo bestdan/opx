@@ -89,11 +89,13 @@ func Name() string {
 // Describe returns a one-line human label for the dialog body: the subject
 // process's argv (path-shortened), optionally prefixed with a further
 // non-shell/terminal/multiplexer ancestor above it, truncated to 120
-// characters. Falls back to Name() if argv is unavailable. When the
-// subject's argv is a single token (no arguments), there is nothing to
-// describe beyond the name Name() already returns, so no ancestor prefix is
-// added — that leaves the caller (callerDetailLine) able to suppress the
-// line entirely as duplicative.
+// characters. When argv is unavailable it falls back to the subject's
+// executable name — the same value Name() picks, derived from the chain
+// already in hand rather than by walking again. When the subject's argv is a
+// single token (no arguments), there is nothing to describe beyond the name
+// Name() already returns, so no ancestor prefix is added — that leaves the
+// caller (callerDetailLine) able to suppress the line entirely as
+// duplicative.
 func Describe() string {
 	chain := ancestorChain(os.Getppid(), maxWalk)
 	subject := firstInteresting(chain)
@@ -101,11 +103,11 @@ func Describe() string {
 		if len(chain) > 0 {
 			subject = &chain[0]
 		} else {
-			return Name()
+			return "unknown"
 		}
 	}
 	if len(subject.argv) == 0 {
-		return Name()
+		return subject.comm
 	}
 
 	// aboveComms is the comm names of ancestors above the subject, nearest
