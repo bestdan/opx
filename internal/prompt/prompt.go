@@ -95,7 +95,9 @@ func (s *systemConfirmer) Confirm(req Request) error {
 // or a caller name can clear the screen and repaint a forged dialog. The URI
 // is attacker-controlled in every input mode — argv, --env, and --env-file
 // values — since uri.IsOPURI checks only the op:// prefix and three non-empty
-// segments. Anything added to this function must be sanitized too.
+// segments. Anything added to this function must be sanitized too — and the
+// same applies outside it: dialogTitle is the other interpolation the user
+// sees, and it sanitizes for its own reasons.
 func message(req Request) string {
 	detail := callerDetailLine(req)
 	caller := sanitizeDisplay(req.Caller)
@@ -133,6 +135,24 @@ func message(req Request) string {
 		}
 	}
 	return b.String()
+}
+
+// dialogTitle returns the macOS dialog's title bar text.  Split out of
+// confirmDarwin so the sanitizing can be tested without shelling out to
+// osascript.
+//
+// The sanitize is not cosmetic.  confirmDarwin embeds this string in
+// AppleScript source via %q, and Go's %q renders a raw ESC as \x1b — which
+// AppleScript does not accept as an escape, so the script fails to parse and
+// osascript exits non-zero.  confirmDarwin reads that as a denial, meaning a
+// caller name carrying an ESC would make opx unusable on macOS while
+// reporting "access denied by user".  \r, \n, and \t have the opposite
+// problem: AppleScript *does* interpret them, so they would survive %q as
+// real control characters and let a caller pad or line-break the title.
+// sanitizeDisplay defuses both by turning the byte into visible text before
+// %q ever sees it.
+func dialogTitle(req Request) string {
+	return fmt.Sprintf("opx — %s requesting secret access", sanitizeDisplay(req.Caller))
 }
 
 // viaPrefix is the wording prefix confirmAndRead puts on a CallerDetail line
@@ -203,12 +223,11 @@ func confirmDarwin(req Request, stderr io.Writer) error {
 		esc = strings.ReplaceAll(esc, `"`, `\"`)
 		iconClause = fmt.Sprintf(`with icon file (POSIX file "%s")`, esc)
 	}
-	title := fmt.Sprintf("opx — %s requesting secret access", req.Caller)
 	script := fmt.Sprintf(
 		`display dialog %q with title %q `+
 			`buttons {"Deny", "Allow"} default button "Allow" cancel button "Deny" `+
 			`%s giving up after 60`,
-		message(req), title, iconClause,
+		message(req), dialogTitle(req), iconClause,
 	)
 	cmd := exec.Command("osascript", "-e", script)
 	cmd.Stderr = stderr

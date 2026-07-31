@@ -96,7 +96,8 @@ func TestMessage_CallerDetailEscapesTerminalControlCharacters(t *testing.T) {
 
 // controlChars are the bytes that must never reach /dev/tty from a
 // caller-controlled field: ESC begins an ANSI sequence, CR rewrites the
-// current line, and DEL sits at the head of the C1 range.
+// current line, and DEL (0x7f) sits just below the C1 range (0x80-0x9f)
+// that sanitizeDisplay escapes alongside it.
 const controlChars = "\x1b\r\x7f"
 
 // TestMessage_SingleURIEscapesTerminalControlCharacters covers the
@@ -144,6 +145,38 @@ func TestMessage_CallerEscaped(t *testing.T) {
 	})
 	if strings.ContainsAny(got, controlChars) {
 		t.Errorf("message must not pass control characters through from Caller: %q", got)
+	}
+	// Doubled backslash: sanitizeDisplay emits \x1b, then the header's %q
+	// escapes that backslash again. Asserting the escape is *present* — not
+	// just that the raw byte is gone — is what distinguishes rendering the
+	// escape visibly from silently dropping it.
+	if !strings.Contains(got, `\\x1b[2J`) {
+		t.Errorf("message must render the escape visibly: %q", got)
+	}
+}
+
+// TestDialogTitle_Escaped covers the one dialog interpolation that is not in
+// message()'s body. An unsanitized ESC here does not repaint a terminal — the
+// title only reaches the macOS GUI dialog — but %q renders it as \x1b, which
+// AppleScript rejects, so the script fails to parse and opx reports a denial
+// for a request the user never saw.
+func TestDialogTitle_Escaped(t *testing.T) {
+	got := dialogTitle(Request{Caller: "python3\x1b[2J\rclaude"})
+	if strings.ContainsAny(got, controlChars) {
+		t.Errorf("dialogTitle must not pass control characters through: %q", got)
+	}
+	if !strings.Contains(got, `\x1b[2J`) {
+		t.Errorf("dialogTitle must render the escape visibly: %q", got)
+	}
+}
+
+// TestDialogTitle_BenignUnchanged is the counterpart regression guard: an
+// ordinary caller name must render byte-for-byte as before.
+func TestDialogTitle_BenignUnchanged(t *testing.T) {
+	got := dialogTitle(Request{Caller: "deploy.sh"})
+	want := "opx — deploy.sh requesting secret access"
+	if got != want {
+		t.Errorf("dialogTitle = %q, want %q", got, want)
 	}
 }
 
