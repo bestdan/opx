@@ -132,9 +132,46 @@ deliberate intent.
    batch fails, nothing reaches the sink — no stdout output, and in run
    mode the child is not spawned at all. Half-populated environments
    are a footgun, not a feature.
+6. **Every caller-controlled value the user sees passes through
+   `sanitizeDisplay`** — dialog body *and* title. See `message` and
+   `dialogTitle` in `internal/prompt`. The URI is attacker-controlled in
+   every input mode (`uri.IsOPURI` checks the `op://` prefix and three
+   non-empty segments, so any byte is legal inside a segment), and the
+   caller name is a self-asserted process name. Scope this to "every
+   place caller-controlled text reaches the user", not to one function:
+   the original sweep was scoped to `message()`, and `dialogTitle` — the
+   interpolation it missed — needed a follow-up fix. Unescaped, a CR or
+   ESC repaints the one dialog that authorizes the read.
+7. **Security-critical helpers are resolved from compiled-in absolute
+   paths, never PATH.** See `resolveHelper` in `internal/prompt`, which
+   screens for a regular, executable, non-group/world-writable file;
+   it currently covers `osascript` and the `defaults` appearance query.
+   PATH belongs to the process opx is prompting the user about, so a
+   helper found there is the caller choosing what answers its own
+   dialog — and a helper that exits 0 is indistinguishable from the user
+   clicking Allow. **`ps` (`internal/caller`) and `op`
+   (`internal/oprunner`) are still resolved by bare name and are not yet
+   covered**; closing that is outstanding work, not a documented
+   exemption.
+8. **`caller.RenderCommand`'s output is an authorization statement, not
+   a summary.** In `opx run` it is the only disclosure of which process
+   receives the plaintext secrets, so it keeps full paths and full
+   argument values, quotes anything whose boundaries would otherwise be
+   ambiguous, and states how many arguments it dropped rather than
+   trailing off. Do **not** merge it back into `renderAncestorArgv`
+   however similar they look: abbreviation is a readability win when
+   describing a process that already ran, and a lie when describing one
+   about to be handed secrets.
 
 If a change appears to remove or weaken any of these, call it out
 explicitly in the PR description rather than burying it in a refactor.
+
+Invariants 6 and 8 have each already needed a follow-up fix after the
+original change merged — a missed interpolation site, and a display
+quoter that escaped `"` but not `\`, letting an argument forge its own
+closing quote. Both were believed held by the author and caught by
+someone reading the merged code. Escaping and quoting are where this
+codebase's reviews have actually failed; weight them accordingly.
 
 ## Things to avoid
 
@@ -159,6 +196,15 @@ explicitly in the PR description rather than burying it in a refactor.
   System Settings › Sound is the configuration surface. A caller can reach
   that too, but only by muting the machine globally and persistently, which
   is the difference that matters. See `dialogScript` in `internal/prompt`.
+- Reintroducing `exec.LookPath`, or a bare command name, for any
+  security-critical helper. See invariant 7 — the lookup itself is the
+  vulnerability, not just what the helper does afterwards.
+- Reaching for `internal/shellquote` to quote something for **display**.
+  It exists for `eval` consumption: it always wraps in single quotes
+  (noise in a dialog) and passes control bytes through unchanged, since
+  nothing expands inside single quotes. Display quoting is a different
+  problem — see `quoteForDisplay` in `internal/caller`, and the two
+  commits that got it wrong before touching it.
 - Adding logging frameworks, config loaders, or CLI parsing libraries.
 - Introducing cgo (breaks `make cross`).
 - Caching the `op` session — that is exactly what this tool exists to

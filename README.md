@@ -27,6 +27,42 @@ a window in which it can read arbitrary secrets without your knowledge.
 The result: every secret read is explicitly authorized by you, and no
 residual session is left behind for another process to abuse.
 
+### What this does and does not defend against
+
+The dialog is the whole trust boundary, so it matters what can influence it.
+The calling process is the adversary here — it chooses the URI, the child
+command, and the environment `opx` inherits.
+
+**Defended:**
+
+- Text the caller controls — the URI, the bound variable name, the process
+  name — cannot inject terminal or AppleScript control sequences to repaint
+  or forge the dialog.
+- In `opx run`, the dialog names the child that will receive the secrets by
+  its full path, and shows its arguments — quoted, unshortened, and up to a
+  bounded width. Anything past that width is disclosed as a count of omitted
+  arguments rather than silently dropped, so the destination cannot be
+  hidden by padding the command line.
+- The dialog helper (`osascript`) is located at a fixed absolute path, so a
+  binary planted earlier on `PATH` cannot stand in for it and approve the
+  request itself.
+
+**Not defended, today:**
+
+- `ps` and `op` are still located via `PATH`. A process that controls `PATH`
+  can supply its own — making the dialog name a program you trust, or letting
+  the `op signout` that ends the session silently do nothing. Both are known
+  gaps with fixes in progress. Until they land, these two guarantees hold
+  only against a caller that cannot influence the `PATH` `opx` inherits —
+  and a process that launches `opx` sets that `PATH` itself, so in practice
+  assume they do not hold against a hostile caller.
+- An attacker who can already write to a directory like `/usr/local/bin`, or
+  edit your shell profile, is outside what `opx` can reach. It hardens a
+  specific, cheap, ambient vector; it is not a defense against a fully
+  compromised account.
+- The confirmation is only as good as your reading of it. `opx` makes the
+  request legible — it cannot make an approval considered.
+
 ## Installation
 
 Prerequisites:
