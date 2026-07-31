@@ -36,6 +36,11 @@ Part of [[sec_hardening_plan]]. No finding of its own — this is what stops the
 > get wrong as the code it describes — which is an argument for this task, not
 > against it.
 >
+> Followed by **#21**, which put that correction into invariant 6 and added a
+> test pinning the `%q`. Co-review on #21 then caught the reworded text
+> asserting a wrong count of `%q` sites — the fourth escaping/counting
+> correction on this plan, and the second in prose rather than code.
+>
 > One correction came out of the same review: **`sanitizeDisplay` is not the
 > only guard on non-printable runes.** `%q` wraps the whole AppleScript body
 > and title, so a bidi override (U+202E) in a URI is rendered as a literal

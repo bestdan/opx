@@ -32,7 +32,7 @@ The Linux and `/dev/tty` code paths are gone from the tree, which changes three 
 - **Task 7 shrinks** (size 5 → 3): the `/proc/<pid>/exe` half went with the Linux support. The macOS side was always the important one.
 - **Tasks 4 and 7 get sharper, not easier.** `ps` is now the *only* source of caller identity, with no `/proc` walk to fall back on or cross-check against.
 
-Task 8 is **unblocked and promoted**: three security properties are merged and undocumented, so its window is open now, not after the remaining code.
+Task 8 was **unblocked and promoted** on those grounds — three security properties were merged and undocumented — and has since landed (#20, #21).
 
 ## Scope / non-goals
 
@@ -65,12 +65,28 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 5. [[sec_hardening_task_5]] — Resolve `op` once, reject untrusted locations, fail closed (F5).
 6. ~~[[sec_hardening_task_6]] — Render the run-mode child command faithfully~~ — **merged, #16** (+ #19).
 7. [[sec_hardening_task_7]] — Base caller identity on the executable path, not the self-asserted `comm` (F6).
-8. ~~[[sec_hardening_task_8]] — Record the merged invariants and the residual risk~~ — **merged, #20**.
+8. ~~[[sec_hardening_task_8]] — Record the merged invariants and the residual risk~~ — **merged, #20** (+ #21, which added the `%q` layer to invariant 6 and a test pinning it).
 9. [[sec_hardening_task_9]] — Graduate the durable decisions to `dev_docs/security-hardening.md` and delete this plan folder.
 
 Remaining order: **4** (`ps`, small, unblocks 7), then **7** (blocked by 4 — both rewrite `psPPIDComm`; needs open question 3 answered), then **2**, then **5** once its open question is answered. Task 9 closes the plan out.
 
-Four of the eight code/doc tasks are merged: 1, 3, 6, 8. Findings closed so far: F1, F2, F4, F7, F8, F9, F10. Outstanding: **F3** (task 4), **F5** (task 5), **F6** (task 7).
+## Progress
+
+| | Task | Finding(s) | State |
+|---|---|---|---|
+| ✅ | 1 — sanitize every dialog interpolation | F2, F4, F8 | merged #15, + `0bb2506` |
+| ⬜ | 2 — reject control bytes in `uri.IsOPURI` | (defense in depth) | open |
+| ✅ | 3 — resolve dialog helpers from absolute paths | **F1 (HIGH)** | merged #14 |
+| ⬜ | 4 — `ps` by absolute path, minimal env | F3 | **next** |
+| ⬜ | 5 — resolve `op` once, fail closed | F5 | open — needs question 2 |
+| ✅ | 6 — faithful run-mode child rendering | F7, F9, F10 | merged #16, + #19 |
+| ⬜ | 7 — identity from exe path, not `comm` | F6 | blocked by 4; needs question 3 |
+| ✅ | 8 — invariants + residual risk in docs | (none) | merged #20, + #21 |
+| ⬜ | 9 — graduate to `dev_docs/`, delete plan | (none) | last |
+
+**7 of 10 findings closed** — F1, F2, F4, F7, F8, F9, F10. Outstanding: **F3** (task 4), **F5** (task 5), **F6** (task 7).
+
+Not covered by any task: the **2 candidate sites the scan's verification panel left unreviewed** when it hit its budget. They are unexamined, not cleared, and closing every task below still leaves them that way.
 
 ## Open questions
 
@@ -83,4 +99,6 @@ Four of the eight code/doc tasks are merged: 1, 3, 6, 8. Findings closed so far:
 
    **Partly answered.** The specific gap I worried about — bidi overrides slipping past `sanitizeDisplay` — does not exist on the supported platform. `%q` wraps the entire AppleScript body and title, so a U+202E in a URI becomes a literal backslash-u escape, AppleScript's parser rejects the script, `osascript` exits non-zero, and `confirmDarwin` maps that to `ErrDenied`. Verified directly: the escape yields `syntax error … (-2741)`, rc 1. So the layering is `sanitizeDisplay` for C0/C1 (rendered visibly) and `%q` for everything else non-printable (fails closed). That is a real design, not an accident, and it argues **against** a single shared escaper: the two layers deliberately fail differently.
 
-   Still open: whether that layering should be stated in `AGENTS.md` invariant 6, which currently describes only `sanitizeDisplay`. Cheap to add and it would stop someone "simplifying" the `%q` away.
+   **Now fully answered — #21** states the layering in invariant 6 and adds `TestDialogScript_NonPrintableNeverReachesAppleScriptSource` to pin it, so the `%q` can no longer be tidied away silently.
+
+   The lesson that survives, for tasks 4, 5 and 7: **escaping and quoting are where review has actually failed on this plan** — four separate corrections (`0bb2506`, #19, and two caught in co-review on #20 and #21), every one a property the author believed was already held. Two of those were doc claims that overstated coverage, which is the same error in prose. Assert what the code does, then go check; don't assert a count you haven't grepped.
