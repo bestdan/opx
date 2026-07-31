@@ -6,6 +6,14 @@
 //
 // The dialog is drawn by osascript (AppleScript).  opx is macOS-only; there
 // is no fallback backend.
+//
+// No binary on the dialog path is located via PATH. PATH belongs to the
+// process opx is prompting the user about, so a caller able to put a binary
+// named "osascript" ahead of the real one would choose what the dialog
+// answers — and a helper that exits 0 is indistinguishable from the user
+// clicking Allow. Helpers are resolved from compiled-in absolute paths; see
+// resolveHelper. That covers osascript and the `defaults` appearance query
+// isDarkMode runs before the dialog is drawn.
 package prompt
 
 import (
@@ -71,6 +79,49 @@ func NewWithStderr(w io.Writer) Confirmer { return &systemConfirmer{stderr: w} }
 
 type systemConfirmer struct {
 	stderr io.Writer
+}
+
+// These are the only locations a helper on the dialog path is accepted from.
+// Absolute by construction: the point is to never consult PATH.
+// defaultsCandidates covers isDarkMode's appearance query — it cannot answer
+// the dialog, but it is exec'd before the dialog is drawn, so it is resolved
+// the same way the backend itself is.
+var (
+	osascriptCandidates = []string{"/usr/bin/osascript"}
+	defaultsCandidates  = []string{"/usr/bin/defaults"}
+)
+
+// resolveHelper returns the first candidate that is a regular, executable file
+// which is not group- or world-writable, or "" when none qualifies.
+//
+// The check rejects a helper another account could have written to directly.
+// It does not reach two other ways one could be swapped, and neither is an
+// oversight — both are bounded by where the candidates actually live:
+//
+//   - The containing directory is not examined, so a clean file in a
+//     writable directory is accepted even though it could be replaced by
+//     unlink-and-recreate. TestResolveHelper_AcceptsCleanFileInWritableDir
+//     pins that, so this comment cannot drift back into claiming otherwise.
+//   - A helper the invoking user owns and rewrote themselves is
+//     indistinguishable from a packaged one.
+//
+// Every real candidate is under /usr/bin on the SIP-sealed system volume,
+// which no account can write to or unlink from — so reaching either gap
+// means SIP is already defeated, and the mode check is not what is holding
+// the line at that point.
+func resolveHelper(candidates []string) string {
+	for _, path := range candidates {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		mode := info.Mode().Perm()
+		if mode&0o111 == 0 || mode&0o022 != 0 {
+			continue
+		}
+		return path
+	}
+	return ""
 }
 
 func (s *systemConfirmer) Confirm(req Request) error {
@@ -212,7 +263,14 @@ func sanitizeDisplay(s string) string {
 //
 // `giving up after 60` auto-dismisses (treated as denial) if the user walks
 // away — fail-closed safety net for unattended terminals.
+//
+// An unresolvable osascript is a denial. ErrDenied already covers "no UI
+// available to ask", and there is no other backend to fall back to.
 func confirmDarwin(req Request, stderr io.Writer) error {
+	osascript := resolveHelper(osascriptCandidates)
+	if osascript == "" {
+		return ErrDenied
+	}
 	iconClause := "with icon caution"
 	if path := writeIconFile(); path != "" {
 		// AppleScript string-escape the path: backslash + quote.
@@ -226,7 +284,7 @@ func confirmDarwin(req Request, stderr io.Writer) error {
 			`%s giving up after 60`,
 		message(req), dialogTitle(req), iconClause,
 	)
-	cmd := exec.Command("osascript", "-e", script)
+	cmd := exec.Command(osascript, "-e", script)
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
 	if err != nil {
