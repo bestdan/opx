@@ -336,7 +336,7 @@ func TestDialogScript_BeepsBeforeDisplayingDialog(t *testing.T) {
 		Caller:   "bash",
 	}, "with icon caution")
 
-	if !strings.HasPrefix(got, "beep\n") {
+	if !strings.HasPrefix(got, "beep 3\n") {
 		t.Fatalf("script does not open with a beep statement: %q", got)
 	}
 	beep := strings.Index(got, "beep")

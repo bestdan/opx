@@ -4,9 +4,9 @@
 //   - which environment variable each URI will be bound to (when applicable)
 //   - which process is requesting it
 //
-// It also beeps, so an access attempt is audible even when the dialog is on
-// another Space or behind a fullscreen window.  See dialogScript for why that
-// is unconditional.
+// It also beeps three times, so an access attempt is audible — and
+// recognizably opx — even when the dialog is on another Space or behind a
+// fullscreen window.  See dialogScript for why that is unconditional.
 //
 // The dialog is drawn by osascript (AppleScript).  opx is macOS-only; there
 // is no fallback backend.
@@ -211,8 +211,15 @@ func sanitizeDisplay(s string) string {
 // of confirmDarwin, like message and dialogTitle, so the assembled source can
 // be asserted on without shelling out to osascript.
 //
-// The leading `beep` announces the dialog audibly.  It is deliberately
-// unconditional and deliberately not configurable.  The dialog already fails
+// The leading `beep 3` announces the dialog audibly.  Three is for
+// recognizability: it is still the user's own system alert sound, so opx is
+// distinguishable from every other alert on the machine by rhythm rather than
+// by timbre — which costs nothing, where a distinct sound file would have
+// meant giving up the alert-volume behavior described below.  The repeat
+// count is fixed; AppleScript does not expose the interval.
+//
+// The beep is deliberately unconditional and deliberately not
+// configurable.  The dialog already fails
 // closed when nobody is watching (`giving up after 60` below), so the sound
 // adds no leak prevention; what it adds is tamper evidence — without it, a
 // process can probe for a secret while the user is away, absorb a silent
@@ -231,7 +238,7 @@ func sanitizeDisplay(s string) string {
 // hazard.
 func dialogScript(req Request, iconClause string) string {
 	return fmt.Sprintf(
-		`beep`+"\n"+
+		`beep 3`+"\n"+
 			`display dialog %q with title %q `+
 			`buttons {"Deny", "Allow"} default button "Allow" cancel button "Deny" `+
 			`%s giving up after 60`,
