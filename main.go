@@ -93,9 +93,15 @@ func main() {
 	// the caller lookup shells out to macOS `ps`. Say so plainly rather than
 	// letting the missing osascript surface as "access denied by user", which
 	// reads as a decision the user made.
+	//
+	// exitOpFail, not exitUsage: a bare `opx` exiting 2 is the documented
+	// install-success signal (README's verify step and the 1password-onboard
+	// runbook both read "usage message, exit 2" as "opx is ready"). Exiting 2
+	// here would hand that same all-clear to a Linux box where opx cannot
+	// work — the very masquerade this guard exists to prevent.
 	if runtime.GOOS != "darwin" {
 		fmt.Fprintf(os.Stderr, "opx: unsupported platform %q — opx runs on macOS only\n", runtime.GOOS)
-		os.Exit(exitUsage)
+		os.Exit(exitOpFail)
 	}
 	verbose, args := extractVerbose(os.Args[1:])
 	if verbose {

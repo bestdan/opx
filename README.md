@@ -180,7 +180,7 @@ Behavior:
 | Code | Meaning                                             |
 |------|-----------------------------------------------------|
 | 0    | Secret printed to stdout                            |
-| 1    | `op` failed or the read was interrupted             |
+| 1    | `op` failed, the read was interrupted, or not macOS |
 | 2    | Usage error (no args, malformed URI)                |
 | 3    | Denied — dialog dismissed, timed out, or no GUI    |
 

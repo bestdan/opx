@@ -201,10 +201,12 @@ func basename(s string) string {
 }
 
 // ancestorChain walks up to n ancestors starting at pid (inclusive) via `ps`,
-// returning as much as it could determine. Each entry's argv is populated
-// when available; failures degrade gracefully rather than aborting the walk.
-// Bounded to at most n+1 `ps` calls total: n for the ppid/comm walk, plus 1
-// for the subject's argv.
+// returning as much as it could determine. Only the subject entry — the first
+// interesting process, or chain[0] when none qualifies — gets its argv
+// populated; every other entry's argv stays nil, since the argv is only ever
+// used to describe the subject. Failures degrade gracefully rather than
+// aborting the walk. Bounded to at most n+1 `ps` calls total: n for the
+// ppid/comm walk, plus 1 for the subject's argv.
 func ancestorChain(pid, n int) []process {
 	var chain []process
 	cur := pid
