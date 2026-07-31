@@ -12,7 +12,7 @@
         "url": "https://github.com/bestdan/opx.git"
       },
       "description": "Claude Code skills for 1Password secret hygiene, built around opx: audit a project's secret management, scaffold a new vault, migrate a plaintext .env to op:// references, and onboard a developer.",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "keywords": [
         "1password",
         "secrets",

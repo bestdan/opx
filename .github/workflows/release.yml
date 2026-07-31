@@ -32,7 +32,7 @@ jobs:
         run: make cross
 
       - name: checksums
-        run: shasum -a 256 opx-darwin-arm64 opx-darwin-amd64 opx-linux-amd64 > SHA256SUMS
+        run: shasum -a 256 opx-darwin-arm64 opx-darwin-amd64 > SHA256SUMS
 
       - name: create release
         env:
@@ -45,5 +45,4 @@ jobs:
             --verify-tag \
             opx-darwin-arm64 \
             opx-darwin-amd64 \
-            opx-linux-amd64 \
             SHA256SUMS

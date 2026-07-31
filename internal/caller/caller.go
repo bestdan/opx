@@ -2,16 +2,14 @@
 package caller
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
 )
 
 // maxWalk bounds how many ancestors we climb looking for a non-shell process,
-// and (on non-Linux platforms) how many `ps` calls we're willing to make.
+// and how many `ps` calls we're willing to make.
 const maxWalk = 6
 
 // uninteresting is the set of executable names treated as "just a container
@@ -202,96 +200,14 @@ func basename(s string) string {
 	return s
 }
 
-// ancestorChain walks up to n ancestors starting at pid (inclusive),
-// returning as much as it could determine. Each entry's argv is populated
-// when available; failures degrade gracefully rather than aborting the walk.
+// ancestorChain walks up to n ancestors starting at pid (inclusive) via `ps`,
+// returning as much as it could determine. Only the subject entry — the first
+// interesting process, or chain[0] when none qualifies — gets its argv
+// populated; every other entry's argv stays nil, since the argv is only ever
+// used to describe the subject. Failures degrade gracefully rather than
+// aborting the walk. Bounded to at most n+1 `ps` calls total: n for the
+// ppid/comm walk, plus 1 for the subject's argv.
 func ancestorChain(pid, n int) []process {
-	if runtime.GOOS == "linux" {
-		return ancestorChainLinux(pid, n)
-	}
-	return ancestorChainPS(pid, n)
-}
-
-// ancestorChainLinux walks the ppid chain via /proc, without spawning any
-// subprocess.
-func ancestorChainLinux(pid, n int) []process {
-	var chain []process
-	cur := pid
-	for i := 0; i < n && cur > 1; i++ {
-		comm, ok := readLinuxComm(cur)
-		if !ok {
-			break
-		}
-		p := process{pid: cur, comm: comm}
-		if argv, ok := readLinuxArgv(cur); ok {
-			p.argv = argv
-		}
-		chain = append(chain, p)
-		ppid, ok := readLinuxPPID(cur)
-		if !ok {
-			break
-		}
-		cur = ppid
-	}
-	return chain
-}
-
-func readLinuxComm(pid int) (string, bool) {
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-	if err != nil {
-		return "", false
-	}
-	return strings.TrimSpace(string(b)), true
-}
-
-func readLinuxPPID(pid int) (int, bool) {
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return 0, false
-	}
-	// Format: pid (comm) state ppid ...  — comm may itself contain spaces or
-	// parens, so find the closing paren of the comm field before splitting
-	// the remaining fields on whitespace.
-	s := string(b)
-	close := strings.LastIndexByte(s, ')')
-	if close < 0 || close+2 >= len(s) {
-		return 0, false
-	}
-	fields := strings.Fields(s[close+2:])
-	if len(fields) < 2 { // fields[0] = state, fields[1] = ppid
-		return 0, false
-	}
-	ppid, err := strconv.Atoi(fields[1])
-	if err != nil {
-		return 0, false
-	}
-	return ppid, true
-}
-
-func readLinuxArgv(pid int) ([]string, bool) {
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if err != nil || len(b) == 0 {
-		return nil, false
-	}
-	b = bytesTrimTrailingNUL(b)
-	parts := strings.Split(string(b), "\x00")
-	if len(parts) == 0 || (len(parts) == 1 && parts[0] == "") {
-		return nil, false
-	}
-	return parts, true
-}
-
-func bytesTrimTrailingNUL(b []byte) []byte {
-	for len(b) > 0 && b[len(b)-1] == 0 {
-		b = b[:len(b)-1]
-	}
-	return b
-}
-
-// ancestorChainPS walks the ppid chain via `ps`, used on macOS and any
-// platform without a /proc fast path. Bounded to at most n+1 `ps` calls
-// total: n for the ppid/comm walk, plus 1 for the subject's argv.
-func ancestorChainPS(pid, n int) []process {
 	var chain []process
 	cur := pid
 	for i := 0; i < n && cur > 1; i++ {
