@@ -142,6 +142,21 @@ deliberate intent.
    the original sweep was scoped to `message()`, and `dialogTitle` — the
    interpolation it missed — needed a follow-up fix. Unescaped, a CR or
    ESC repaints the one dialog that authorizes the read.
+
+   `sanitizeDisplay` is only half the guard, and the halves fail
+   differently on purpose. It covers C0/C1 (`< 0x20`, `0x7f`–`0x9f`),
+   rendering those visibly so the dialog still shows. Everything else
+   non-printable — bidi overrides like U+202E, other format characters —
+   is caught by the `%q` that `dialogScript` wraps the body and title in:
+   Go renders the rune as a literal `\uXXXX`, AppleScript's parser
+   rejects that, `osascript` exits non-zero, and `confirmDarwin` maps
+   that to `ErrDenied`. So the request fails closed rather than
+   rendering a reordered path. **Do not "simplify" that `%q` into plain
+   interpolation** — it is the half that stops a URI from lying about
+   which secret is being requested.
+   `TestDialogScript_NonPrintableNeverReachesAppleScriptSource` guards
+   it; if that test is in your way, you are removing the guard, not the
+   noise.
 7. **Security-critical helpers are resolved from compiled-in absolute
    paths, never PATH.** See `resolveHelper` in `internal/prompt`, which
    screens for a regular, executable, non-group/world-writable file;
