@@ -326,3 +326,43 @@ func TestMessage_BatchWithoutNamesStillListsURIs(t *testing.T) {
 		t.Errorf("no Name set, but message contained $: %q", got)
 	}
 }
+
+func TestDialogScript_BeepsBeforeDisplayingDialog(t *testing.T) {
+	// The beep is the tamper-evidence signal: it must fire as its own
+	// statement ahead of the dialog, not somewhere inside the dialog's
+	// arguments where AppleScript would treat it as text.
+	got := dialogScript(Request{
+		Bindings: []Binding{{URI: "op://V/I/f"}},
+		Caller:   "bash",
+	}, "with icon caution")
+
+	if !strings.HasPrefix(got, "beep\n") {
+		t.Fatalf("script does not open with a beep statement: %q", got)
+	}
+	beep := strings.Index(got, "beep")
+	dialog := strings.Index(got, "display dialog")
+	if dialog < 0 {
+		t.Fatalf("script has no display dialog: %q", got)
+	}
+	if beep > dialog {
+		t.Errorf("beep at %d comes after display dialog at %d: %q", beep, dialog, got)
+	}
+}
+
+func TestDialogScript_BeepIsNotConfigurable(t *testing.T) {
+	// Regression guard for a deliberate design decision: the sound is a
+	// detection signal, so no caller-reachable input may suppress it. If a
+	// switch is ever added, this test should fail and force the argument to
+	// be had again rather than the behavior quietly regressing.
+	t.Setenv("OPX_SOUND", "0")
+	t.Setenv("OPX_NO_SOUND", "1")
+
+	got := dialogScript(Request{
+		Bindings: []Binding{{URI: "op://V/I/f"}},
+		Caller:   "bash",
+	}, "with icon caution")
+
+	if !strings.Contains(got, "beep") {
+		t.Errorf("environment suppressed the beep: %q", got)
+	}
+}

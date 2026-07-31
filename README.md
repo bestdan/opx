@@ -195,6 +195,12 @@ In all non-zero cases nothing reaches stdout — read `stderr` for the reason.
   macOS) to show the dialog. If it can't run — a daemonized job with no
   window server, for instance — the request is denied by design. Run `opx`
   interactively.
+- **The prompt beeps, and there is no setting to stop it.** The dialog plays
+  your system alert sound so an access attempt is audible when it opens on
+  another Space or behind a fullscreen window. Volume and sound choice come
+  from System Settings › Sound — deliberately, since that is the one place a
+  calling process cannot reach. The beep is tamper evidence, not a security
+  control in itself: hearing nothing is not proof nothing was read.
 - **macOS Gatekeeper.** A locally built `opx` binary is unsigned; the
   first run from Finder will be blocked. Either run it from a terminal or
   remove the quarantine attribute: `xattr -d com.apple.quarantine ./opx`.

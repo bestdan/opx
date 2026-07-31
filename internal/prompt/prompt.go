@@ -4,6 +4,10 @@
 //   - which environment variable each URI will be bound to (when applicable)
 //   - which process is requesting it
 //
+// It also beeps, so an access attempt is audible even when the dialog is on
+// another Space or behind a fullscreen window.  See dialogScript for why that
+// is unconditional.
+//
 // The dialog is drawn by osascript (AppleScript).  opx is macOS-only; there
 // is no fallback backend.
 package prompt
@@ -203,6 +207,38 @@ func sanitizeDisplay(s string) string {
 	return b.String()
 }
 
+// dialogScript builds the AppleScript source confirmDarwin runs.  Split out
+// of confirmDarwin, like message and dialogTitle, so the assembled source can
+// be asserted on without shelling out to osascript.
+//
+// The leading `beep` announces the dialog audibly.  It is deliberately
+// unconditional and deliberately not configurable.  The dialog already fails
+// closed when nobody is watching (`giving up after 60` below), so the sound
+// adds no leak prevention; what it adds is tamper evidence — without it, a
+// process can probe for a secret while the user is away, absorb a silent
+// 60-second timeout, and leave no trace the attempt happened.  A detection
+// signal is only worth what it costs to suppress, and any opx-level switch —
+// env var or config file — would be readable and writable by the very process
+// opx is gating, i.e. an alarm with the off switch on the outside.  The
+// user-facing configuration is macOS's own: `beep` plays the system alert
+// sound at the system alert volume, which System Settings › Sound owns and no
+// caller can reach.
+//
+// It is also a constant token, which is the other reason to prefer it over
+// afplay: it introduces no new user-influenced interpolation into this
+// AppleScript source, so the sanitizeDisplay invariant documented on message
+// is untouched.  A user-chosen sound name or path would land squarely in that
+// hazard.
+func dialogScript(req Request, iconClause string) string {
+	return fmt.Sprintf(
+		`beep`+"\n"+
+			`display dialog %q with title %q `+
+			`buttons {"Deny", "Allow"} default button "Allow" cancel button "Deny" `+
+			`%s giving up after 60`,
+		message(req), dialogTitle(req), iconClause,
+	)
+}
+
 // confirmDarwin shows a native macOS dialog via osascript.
 //
 // `cancel button "Deny"` is load-bearing: without it, AppleScript exits 0
@@ -220,13 +256,7 @@ func confirmDarwin(req Request, stderr io.Writer) error {
 		esc = strings.ReplaceAll(esc, `"`, `\"`)
 		iconClause = fmt.Sprintf(`with icon file (POSIX file "%s")`, esc)
 	}
-	script := fmt.Sprintf(
-		`display dialog %q with title %q `+
-			`buttons {"Deny", "Allow"} default button "Allow" cancel button "Deny" `+
-			`%s giving up after 60`,
-		message(req), dialogTitle(req), iconClause,
-	)
-	cmd := exec.Command("osascript", "-e", script)
+	cmd := exec.Command("osascript", "-e", dialogScript(req, iconClause))
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
 	if err != nil {
