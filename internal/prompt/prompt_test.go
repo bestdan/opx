@@ -109,6 +109,41 @@ func TestResolveHelper_AcceptsCleanExecutable(t *testing.T) {
 	}
 }
 
+// TestResolveHelper_AcceptsCleanFileInWritableDir documents the boundary of
+// the permission check rather than a property we want. resolveHelper looks at
+// the candidate's own mode and never at its directory, so a 0755 helper inside
+// a 0777 directory is accepted — even though replacing it needs write
+// permission on the *directory*, not the file, which any account has here.
+//
+// This is deliberate: every real candidate lives under /usr/bin on the
+// SIP-sealed volume, where no account can unlink or recreate anything, so a
+// directory check would defend a case that cannot arise. The test exists so
+// that stays a stated limit instead of an unnoticed hole.
+func TestResolveHelper_AcceptsCleanFileInWritableDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "writable")
+	if err := os.Mkdir(dir, 0o777); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Mkdir's perm is masked by umask; set the bits we actually asked for.
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatalf("chmod dir: %v", err)
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if info.Mode().Perm()&0o022 == 0 {
+		t.Fatalf("test setup: dir %q is not group/world-writable (%v)", dir, info.Mode().Perm())
+	}
+
+	path := writeHelper(t, dir, "osascript", 0o755)
+	if got := prompt.ResolveHelperForTest([]string{path}); got != path {
+		t.Errorf("resolveHelper() = %q, want %q — if this now returns \"\", the "+
+			"directory check was added and resolveHelper's doc comment needs updating", got, path)
+	}
+}
+
 // TestResolveHelper_FirstMatchWins pins the preference order: candidates are
 // tried in list order, and an unusable earlier entry is skipped rather than
 // aborting the search.

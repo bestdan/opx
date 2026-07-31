@@ -92,10 +92,23 @@ var (
 )
 
 // resolveHelper returns the first candidate that is a regular, executable file
-// which is not group- or world-writable, or "" when none qualifies. The
-// write-permission check rejects a helper any other account could have
-// replaced; it cannot detect one the invoking user owns and rewrote
-// themselves, which is the limit of what this defense reaches.
+// which is not group- or world-writable, or "" when none qualifies.
+//
+// The check rejects a helper another account could have written to directly.
+// It does not reach two other ways one could be swapped, and neither is an
+// oversight — both are bounded by where the candidates actually live:
+//
+//   - The containing directory is not examined, so a clean file in a
+//     writable directory is accepted even though it could be replaced by
+//     unlink-and-recreate. TestResolveHelper_AcceptsCleanFileInWritableDir
+//     pins that, so this comment cannot drift back into claiming otherwise.
+//   - A helper the invoking user owns and rewrote themselves is
+//     indistinguishable from a packaged one.
+//
+// Every real candidate is under /usr/bin on the SIP-sealed system volume,
+// which no account can write to or unlink from — so reaching either gap
+// means SIP is already defeated, and the mode check is not what is holding
+// the line at that point.
 func resolveHelper(candidates []string) string {
 	for _, path := range candidates {
 		info, err := os.Stat(path)
