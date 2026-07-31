@@ -88,17 +88,32 @@ func (s *systemConfirmer) Confirm(req Request) error {
 // binding it preserves the original "X wants to read: op://..." phrasing; for
 // multiple bindings it lists each URI on its own line separated by blank
 // lines, with the bound variable name appended when present.
+//
+// Invariant: every value interpolated into the returned body has passed
+// through sanitizeDisplay. confirmTTY writes this string to /dev/tty verbatim,
+// before the user is asked anything, so a control character surviving in a URI
+// or a caller name can clear the screen and repaint a forged dialog. The URI
+// is attacker-controlled in every input mode — argv, --env, and --env-file
+// values — since uri.IsOPURI checks only the op:// prefix and three non-empty
+// segments. Anything added to this function must be sanitized too.
 func message(req Request) string {
 	detail := callerDetailLine(req)
+	caller := sanitizeDisplay(req.Caller)
 	if len(req.Bindings) == 1 && req.Bindings[0].Name == "" {
-		header := fmt.Sprintf("%q wants to read:", req.Caller)
+		// %q stays on top of the sanitized name: it escapes the non-printable
+		// runes sanitizeDisplay does not cover (bidi overrides and other format
+		// characters). It also re-escapes the backslashes sanitizeDisplay
+		// emits, which is cosmetic — a caller name carrying control characters
+		// renders as \\x1b rather than \x1b, and is not passed through either
+		// way.
+		header := fmt.Sprintf("%q wants to read:", caller)
 		if detail != "" {
-			return fmt.Sprintf("%s\n\n%s\n\n%s", header, detail, req.Bindings[0].URI)
+			return fmt.Sprintf("%s\n\n%s\n\n%s", header, detail, sanitizeDisplay(req.Bindings[0].URI))
 		}
-		return fmt.Sprintf("%s\n\n%s", header, req.Bindings[0].URI)
+		return fmt.Sprintf("%s\n\n%s", header, sanitizeDisplay(req.Bindings[0].URI))
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%q wants to read %d secret", req.Caller, len(req.Bindings))
+	fmt.Fprintf(&b, "%q wants to read %d secret", caller, len(req.Bindings))
 	if len(req.Bindings) != 1 {
 		b.WriteByte('s')
 	}
@@ -112,9 +127,9 @@ func message(req Request) string {
 	// "wants to read N secrets:" header (or the via line, when present).
 	for _, bind := range req.Bindings {
 		if bind.Name != "" {
-			fmt.Fprintf(&b, "\n\n  • %s  →  $%s", bind.URI, bind.Name)
+			fmt.Fprintf(&b, "\n\n  • %s  →  $%s", sanitizeDisplay(bind.URI), sanitizeDisplay(bind.Name))
 		} else {
-			fmt.Fprintf(&b, "\n\n  • %s", bind.URI)
+			fmt.Fprintf(&b, "\n\n  • %s", sanitizeDisplay(bind.URI))
 		}
 	}
 	return b.String()
@@ -139,7 +154,7 @@ func callerDetailLine(req Request) string {
 	}
 	stripped, isVia := strings.CutPrefix(req.CallerDetail, viaPrefix)
 	if !isVia {
-		return sanitizeCallerDetail(req.CallerDetail)
+		return sanitizeDisplay(req.CallerDetail)
 	}
 	if idx := strings.LastIndex(stripped, " › "); idx >= 0 {
 		stripped = stripped[idx+len(" › "):]
@@ -147,13 +162,18 @@ func callerDetailLine(req Request) string {
 	if strings.EqualFold(stripped, req.Caller) {
 		return ""
 	}
-	return sanitizeCallerDetail(req.CallerDetail)
+	return sanitizeDisplay(req.CallerDetail)
 }
 
-// sanitizeCallerDetail prevents process-controlled argv from changing the
+// sanitizeDisplay prevents process-controlled text from changing the
 // confirmation UI when it is printed to /dev/tty. C0 and C1 control
 // characters are rendered as visible escapes instead of being passed through.
-func sanitizeCallerDetail(s string) string {
+//
+// Every dialog-body interpolation goes through this — caller name, caller
+// detail, URIs, and bound variable names alike. It was introduced for the
+// CallerDetail line alone, which left the URI (equally caller-controlled, and
+// the thing the user is actually being asked to approve) rendering raw.
+func sanitizeDisplay(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
