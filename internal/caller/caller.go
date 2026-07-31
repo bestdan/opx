@@ -2,6 +2,7 @@
 package caller
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -144,11 +145,16 @@ func describeArgv(argv []string, aboveComms []string) string {
 	return truncate(desc, 120)
 }
 
-// maxChildCommand bounds the rendered child command. Wider than the 120 used
-// for an ancestor description because this line is an authorization decision
-// rather than context: macOS `display dialog` scrolls a long body and the TTY
-// path wraps, so the cost of the extra width is low. It stays bounded because
-// an unreadable wall of text is its own denial of review.
+// maxChildCommand bounds the arguments rendered after argv[0] — not the whole
+// line. Once appending the next argument would push the string past it, the
+// remaining arguments are replaced by an explicit " … +N more argument(s)"
+// count. Two deliberate exemptions put the final string above it: argv[0] is
+// never truncated, and the elision suffix is appended after the check.
+//
+// Wider than the 120 used for an ancestor description because this line is an
+// authorization decision rather than context: macOS `display dialog` scrolls a
+// long body, so the extra width is cheap. It stays bounded because an
+// unreadable wall of text is its own denial of review.
 const maxChildCommand = 300
 
 // RenderCommand renders a to-be-spawned command's argv for the `opx run`
