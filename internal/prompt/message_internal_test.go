@@ -80,6 +80,20 @@ func TestMessage_CallerDetailRunModeSingle(t *testing.T) {
 	}
 }
 
+func TestMessage_CallerDetailEscapesTerminalControlCharacters(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "python3",
+		CallerDetail: "via python3 report.go\x1b[2J\rforged",
+	})
+	if strings.ContainsAny(got, "\x1b\r") {
+		t.Errorf("message must not contain terminal control characters from CallerDetail: %q", got)
+	}
+	if !strings.Contains(got, `\x1b[2J\x0dforged`) {
+		t.Errorf("message must render removed control characters visibly: %q", got)
+	}
+}
+
 func TestMessage_CallerDetailEmpty(t *testing.T) {
 	got := message(Request{
 		Bindings:     []Binding{{URI: "op://V/I/f"}},

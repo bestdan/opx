@@ -128,17 +128,18 @@ func message(req Request) string {
 // when the two render identically.
 const viaPrefix = "via "
 
-// callerDetailLine returns req.CallerDetail verbatim, or "" when it is empty
-// or adds nothing beyond the dialog header's %q. "Adds nothing" means: it is
-// a "via " line and, after stripping that prefix and any "X › " ancestor
-// prefixes, what remains equals Caller, case-insensitively.
+// callerDetailLine returns req.CallerDetail with terminal control characters
+// rendered visibly, or "" when it is empty or adds nothing beyond the dialog
+// header's %q. "Adds nothing" means: it is a "via " line and, after stripping
+// that prefix and any "X › " ancestor prefixes, what remains equals Caller,
+// case-insensitively.
 func callerDetailLine(req Request) string {
 	if req.CallerDetail == "" {
 		return ""
 	}
 	stripped, isVia := strings.CutPrefix(req.CallerDetail, viaPrefix)
 	if !isVia {
-		return req.CallerDetail
+		return sanitizeCallerDetail(req.CallerDetail)
 	}
 	if idx := strings.LastIndex(stripped, " › "); idx >= 0 {
 		stripped = stripped[idx+len(" › "):]
@@ -146,7 +147,22 @@ func callerDetailLine(req Request) string {
 	if strings.EqualFold(stripped, req.Caller) {
 		return ""
 	}
-	return req.CallerDetail
+	return sanitizeCallerDetail(req.CallerDetail)
+}
+
+// sanitizeCallerDetail prevents process-controlled argv from changing the
+// confirmation UI when it is printed to /dev/tty. C0 and C1 control
+// characters are rendered as visible escapes instead of being passed through.
+func sanitizeCallerDetail(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			fmt.Fprintf(&b, `\x%02x`, r)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // confirmDarwin shows a native macOS dialog via osascript.
