@@ -6,6 +6,12 @@
 //
 // The dialog is drawn by osascript (AppleScript).  opx is macOS-only; there
 // is no fallback backend.
+//
+// osascript is never located via PATH. PATH belongs to the process opx is
+// prompting the user about, so a caller able to put a binary named
+// "osascript" ahead of the real one would choose what the dialog answers —
+// and a helper that exits 0 is indistinguishable from the user clicking
+// Allow. It is resolved from a compiled-in absolute path; see resolveHelper.
 package prompt
 
 import (
@@ -71,6 +77,30 @@ func NewWithStderr(w io.Writer) Confirmer { return &systemConfirmer{stderr: w} }
 
 type systemConfirmer struct {
 	stderr io.Writer
+}
+
+// osascriptCandidates is the only location the dialog backend is accepted
+// from. Absolute by construction: the point is to never consult PATH.
+var osascriptCandidates = []string{"/usr/bin/osascript"}
+
+// resolveHelper returns the first candidate that is a regular, executable file
+// which is not group- or world-writable, or "" when none qualifies. The
+// write-permission check rejects a helper any other account could have
+// replaced; it cannot detect one the invoking user owns and rewrote
+// themselves, which is the limit of what this defense reaches.
+func resolveHelper(candidates []string) string {
+	for _, path := range candidates {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		mode := info.Mode().Perm()
+		if mode&0o111 == 0 || mode&0o022 != 0 {
+			continue
+		}
+		return path
+	}
+	return ""
 }
 
 func (s *systemConfirmer) Confirm(req Request) error {
@@ -212,7 +242,14 @@ func sanitizeDisplay(s string) string {
 //
 // `giving up after 60` auto-dismisses (treated as denial) if the user walks
 // away — fail-closed safety net for unattended terminals.
+//
+// An unresolvable osascript is a denial. ErrDenied already covers "no UI
+// available to ask", and there is no other backend to fall back to.
 func confirmDarwin(req Request, stderr io.Writer) error {
+	osascript := resolveHelper(osascriptCandidates)
+	if osascript == "" {
+		return ErrDenied
+	}
 	iconClause := "with icon caution"
 	if path := writeIconFile(); path != "" {
 		// AppleScript string-escape the path: backslash + quote.
@@ -226,7 +263,7 @@ func confirmDarwin(req Request, stderr io.Writer) error {
 			`%s giving up after 60`,
 		message(req), dialogTitle(req), iconClause,
 	)
-	cmd := exec.Command("osascript", "-e", script)
+	cmd := exec.Command(osascript, "-e", script)
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
 	if err != nil {
