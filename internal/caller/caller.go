@@ -2,6 +2,7 @@
 package caller
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -131,7 +132,7 @@ func Describe() string {
 // is added regardless of aboveComms — that leaves the caller
 // (callerDetailLine) able to suppress the line entirely as duplicative.
 func describeArgv(argv []string, aboveComms []string) string {
-	desc := renderArgv(argv)
+	desc := renderAncestorArgv(argv)
 	if len(argv) == 1 {
 		return truncate(desc, 120)
 	}
@@ -144,19 +145,79 @@ func describeArgv(argv []string, aboveComms []string) string {
 	return truncate(desc, 120)
 }
 
-// RenderCommand renders a to-be-spawned command's argv for display: the
-// basename of argv[0], then the remaining args with any path-looking
-// argument (contains "/") reduced to its basename, space-joined and
-// truncated to 120 characters. Used by `opx run` to describe the child
-// command it is about to spawn.
+// maxChildCommand bounds the arguments rendered after argv[0] — not the whole
+// line. Once appending the next argument would push the string past it, the
+// remaining arguments are replaced by an explicit " … +N more argument(s)"
+// count. Two deliberate exemptions put the final string above it: argv[0] is
+// never truncated, and the elision suffix is appended after the check.
+//
+// Wider than the 120 used for an ancestor description because this line is an
+// authorization decision rather than context: macOS `display dialog` scrolls a
+// long body, so the extra width is cheap. It stays bounded because an
+// unreadable wall of text is its own denial of review.
+const maxChildCommand = 300
+
+// RenderCommand renders a to-be-spawned command's argv for the `opx run`
+// confirmation dialog.
+//
+// This rendering is an authorization statement, not a summary: it is the only
+// place the user learns which process is about to receive the plaintext
+// secrets. It therefore keeps full paths and full argument values, quoting
+// anything whose boundaries would otherwise be ambiguous, and when it must
+// drop arguments it says how many rather than trailing off. Do NOT reunify it
+// with renderAncestorArgv — abbreviation is a readability win when describing
+// a process that already ran, and a lie when describing one about to be
+// handed secrets. `/tmp/evil/curl` shortened to `curl`, or
+// `https://evil.example/collect` shortened to `collect`, is exactly the part
+// of the decision the user needed.
+//
+// Control characters are not escaped here; prompt.callerDetailLine runs the
+// whole detail line through sanitizeDisplay before it reaches the terminal.
 func RenderCommand(argv []string) string {
-	return truncate(renderArgv(argv), 120)
+	if len(argv) == 0 {
+		return ""
+	}
+	// argv[0] is the single most decision-relevant token, so it is never
+	// truncated: a long path is shown whole even if no arguments fit beside it.
+	rendered := quoteForDisplay(argv[0])
+	for i := 1; i < len(argv); i++ {
+		next := rendered + " " + quoteForDisplay(argv[i])
+		if len([]rune(next)) > maxChildCommand {
+			return fmt.Sprintf("%s … +%d more argument%s", rendered, len(argv)-i, plural(len(argv)-i))
+		}
+		rendered = next
+	}
+	return rendered
 }
 
-// renderArgv renders a subject's argv as: basename of argv[0], then the
-// remaining args with any path-looking argument (contains "/") reduced to
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// quoteForDisplay wraps s in double quotes when its boundaries would
+// otherwise be unreadable — whitespace, an embedded quote, or an empty
+// argument. A `sh -c '<script>'` payload has to read as one argument, or the
+// dialog implies a shape the child does not have.
+func quoteForDisplay(s string) string {
+	if s == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(s, " \t\n\"'") {
+		return s
+	}
+	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+}
+
+// renderAncestorArgv renders a subject's argv as: basename of argv[0], then
+// the remaining args with any path-looking argument (contains "/") reduced to
 // its basename, space-joined.
-func renderArgv(argv []string) string {
+//
+// Only for describing an ancestor, where the process has already run and
+// brevity aids readability. See RenderCommand for the child case.
+func renderAncestorArgv(argv []string) string {
 	parts := make([]string, len(argv))
 	for i, a := range argv {
 		if i == 0 || strings.Contains(a, "/") {
