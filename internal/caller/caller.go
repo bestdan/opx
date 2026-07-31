@@ -198,17 +198,26 @@ func plural(n int) string {
 }
 
 // quoteForDisplay wraps s in double quotes when its boundaries would
-// otherwise be unreadable — whitespace, an embedded quote, or an empty
-// argument. A `sh -c '<script>'` payload has to read as one argument, or the
-// dialog implies a shape the child does not have.
+// otherwise be unreadable — whitespace, an embedded quote or backslash, or an
+// empty argument. A `sh -c '<script>'` payload has to read as one argument, or
+// the dialog implies a shape the child does not have.
+//
+// Backslashes are escaped alongside quotes, and their presence alone is enough
+// to trigger quoting. Escaping `"` while passing `\` through unchanged renders
+// an argument containing `\"` as `\\"`, which a shell-literate reader parses as
+// an escaped backslash followed by a closing quote — so a single argument
+// reads as two, and the token that looks like the destination is not the one
+// the child receives. That is the same lie about the child's shape this
+// function exists to prevent, told one level down.
 func quoteForDisplay(s string) string {
 	if s == "" {
 		return `""`
 	}
-	if !strings.ContainsAny(s, " \t\n\"'") {
+	if !strings.ContainsAny(s, " \t\n\"'\\") {
 		return s
 	}
-	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+	escaped := strings.ReplaceAll(s, `\`, `\\`)
+	return `"` + strings.ReplaceAll(escaped, `"`, `\"`) + `"`
 }
 
 // renderAncestorArgv renders a subject's argv as: basename of argv[0], then
