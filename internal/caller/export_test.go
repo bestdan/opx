@@ -1,5 +1,28 @@
 package caller
 
+import "testing"
+
+// PSPathForTest exposes the unexported ps resolver to tests in the
+// caller_test package without making it part of the public API.
+func PSPathForTest(candidates []string) string { return psPath(candidates) }
+
+// PSCandidatesForTest exposes the compiled-in ps candidate list so tests can
+// assert its shape without hardcoding it.
+func PSCandidatesForTest() []string { return psCandidates }
+
+// PSEnvForTest exposes the environment both ps invocations run with.
+func PSEnvForTest() []string { return psEnv }
+
+// WithPSCandidatesForTest swaps the compiled-in ps candidate list for the
+// duration of the test, restoring it afterwards. It is the only way to
+// exercise the no-resolvable-ps degradation on a machine that has one.
+func WithPSCandidatesForTest(t *testing.T, candidates []string) {
+	t.Helper()
+	saved := psCandidates
+	t.Cleanup(func() { psCandidates = saved })
+	psCandidates = candidates
+}
+
 // IsUninterestingForTest exposes the unexported shell/terminal/multiplexer
 // skip predicate to tests in the caller_test package without making it part
 // of the public API.

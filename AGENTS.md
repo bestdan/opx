@@ -162,14 +162,24 @@ deliberate intent.
    it; if that test is in your way, you are removing the guard, not the
    noise.
 7. **Security-critical helpers are resolved from compiled-in absolute
-   paths, never PATH.** See `resolveHelper` in `internal/prompt`, which
-   screens for a regular, executable, non-group/world-writable file;
-   it currently covers `osascript` and the `defaults` appearance query.
+   paths, never PATH.** Two screeners do this, deliberately duplicated
+   rather than shared: `resolveHelper` in `internal/prompt` (covering
+   `osascript` and the `defaults` appearance query) and `psPath` in
+   `internal/caller` (covering `ps`). Both accept only a regular,
+   executable, non-group/world-writable file at a compiled-in absolute
+   path. `caller` cannot import `prompt` — `main` composes both — and
+   the two candidate lists have no reason to move together.
    PATH belongs to the process opx is prompting the user about, so a
    helper found there is the caller choosing what answers its own
    dialog — and a helper that exits 0 is indistinguishable from the user
-   clicking Allow. **`ps` (`internal/caller`) and `op`
-   (`internal/oprunner`) are still resolved by bare name and are not yet
+   clicking Allow. The same argument covers `ps`: it is the only source
+   of caller identity since opx narrowed to macOS, so a planted `ps`
+   picks the name the dialog attributes the read to. Both `ps`
+   invocations also run with an explicit minimal environment
+   (`PATH=/bin:/usr/bin`, `LC_ALL=C`) rather than the inherited one. When
+   no trusted `ps` resolves, `caller` degrades to `"unknown"` — the
+   honest answer, and the only one available. **`op`
+   (`internal/oprunner`) is still resolved by bare name and is not yet
    covered**; closing that is outstanding work, not a documented
    exemption.
 8. **`caller.RenderCommand`'s output is an authorization statement, not
