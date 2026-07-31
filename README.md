@@ -38,9 +38,11 @@ command, and the environment `opx` inherits.
 - Text the caller controls — the URI, the bound variable name, the process
   name — cannot inject terminal or AppleScript control sequences to repaint
   or forge the dialog.
-- In `opx run`, the dialog names the child that will receive the secrets with
-  its full path and full arguments; it cannot be made to display a shortened
-  or truncated version that hides the destination.
+- In `opx run`, the dialog names the child that will receive the secrets by
+  its full path, and shows its arguments — quoted, unshortened, and up to a
+  bounded width. Anything past that width is disclosed as a count of omitted
+  arguments rather than silently dropped, so the destination cannot be
+  hidden by padding the command line.
 - The dialog helper (`osascript`) is located at a fixed absolute path, so a
   binary planted earlier on `PATH` cannot stand in for it and approve the
   request itself.
@@ -50,8 +52,10 @@ command, and the environment `opx` inherits.
 - `ps` and `op` are still located via `PATH`. A process that controls `PATH`
   can supply its own — making the dialog name a program you trust, or letting
   the `op signout` that ends the session silently do nothing. Both are known
-  gaps with fixes in progress; until they land, `opx`'s guarantees hold
-  against a caller that cannot write to a directory on your `PATH`.
+  gaps with fixes in progress. Until they land, these two guarantees hold
+  only against a caller that cannot influence the `PATH` `opx` inherits —
+  and a process that launches `opx` sets that `PATH` itself, so in practice
+  assume they do not hold against a hostile caller.
 - An attacker who can already write to a directory like `/usr/local/bin`, or
   edit your shell profile, is outside what `opx` can reach. It hardens a
   specific, cheap, ambient vector; it is not a defense against a fully
