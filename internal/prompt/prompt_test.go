@@ -2,6 +2,7 @@ package prompt_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/bestdan/opx/internal/prompt"
@@ -69,5 +70,16 @@ func TestPangoEscape(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("pangoEscape(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// TestPangoEscape_CallerDetailWithMarkupChars confirms that a CallerDetail
+// containing Pango markup characters (e.g. a child process argv with "<" or
+// "&") comes out escaped once run through the same pangoEscape path zenity
+// uses — the via line isn't a special case exempted from escaping.
+func TestPangoEscape_CallerDetailWithMarkupChars(t *testing.T) {
+	got := prompt.PangoEscapeForTest("via claude › node script.js --filter=a&b <input>")
+	if !strings.Contains(got, "&amp;b") || !strings.Contains(got, "&lt;input&gt;") {
+		t.Errorf("pangoEscape did not escape via-line markup chars: %q", got)
 	}
 }

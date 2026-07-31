@@ -36,7 +36,24 @@ type Binding struct {
 // authorize.  All bindings in one Request are approved or denied together.
 type Request struct {
 	Bindings []Binding
-	Caller   string // executable name of the parent process
+	// Caller is the short label for the requesting process: the executable
+	// name of the nearest ancestor that is not a shell, terminal emulator, or
+	// multiplexer — frequently not the immediate parent (see caller.Name).
+	Caller string
+
+	// CallerDetail is the fully-rendered detail line shown under the dialog
+	// header (e.g. "via claude › python3 script.py" or "to run: python3
+	// script.py --team X"). Callers are responsible for wording their own
+	// prefix — confirmAndRead uses "via " + caller.Describe(), runSubcommand
+	// uses "to run: " + the child argv — since only the caller knows whether
+	// it is describing an ancestor or a child about to be spawned.
+	// A "via " line is suppressed by callerDetailLine when, after stripping
+	// that prefix and any "X › " ancestor prefixes, what remains is equal to
+	// Caller: that means the line adds nothing beyond what the dialog
+	// header's %q already shows. A "to run: " line is never suppressed — it
+	// names the child that will receive the secrets, which is a different
+	// process from the header's even when the two render identically.
+	CallerDetail string
 }
 
 // Confirmer presents the user with a confirmation dialog.
@@ -72,8 +89,13 @@ func (s *systemConfirmer) Confirm(req Request) error {
 // multiple bindings it lists each URI on its own line separated by blank
 // lines, with the bound variable name appended when present.
 func message(req Request) string {
+	detail := callerDetailLine(req)
 	if len(req.Bindings) == 1 && req.Bindings[0].Name == "" {
-		return fmt.Sprintf("%q wants to read:\n\n%s", req.Caller, req.Bindings[0].URI)
+		header := fmt.Sprintf("%q wants to read:", req.Caller)
+		if detail != "" {
+			return fmt.Sprintf("%s\n\n%s\n\n%s", header, detail, req.Bindings[0].URI)
+		}
+		return fmt.Sprintf("%s\n\n%s", header, req.Bindings[0].URI)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%q wants to read %d secret", req.Caller, len(req.Bindings))
@@ -81,16 +103,64 @@ func message(req Request) string {
 		b.WriteByte('s')
 	}
 	b.WriteString(":\n")
+	if detail != "" {
+		b.WriteString("\n" + detail)
+	}
 	// Blank line between bullets so long URI lists don't pile up. The leading
 	// "\n\n" before each bullet adds one separator line above the bullet; the
 	// first bullet's leading blank line also separates the list from the
-	// "wants to read N secrets:" header.
+	// "wants to read N secrets:" header (or the via line, when present).
 	for _, bind := range req.Bindings {
 		if bind.Name != "" {
 			fmt.Fprintf(&b, "\n\n  • %s  →  $%s", bind.URI, bind.Name)
 		} else {
 			fmt.Fprintf(&b, "\n\n  • %s", bind.URI)
 		}
+	}
+	return b.String()
+}
+
+// viaPrefix is the wording prefix confirmAndRead puts on a CallerDetail line
+// describing the calling ancestry. Stripped before comparing against Caller
+// so the duplicate check below isn't fooled by the wording. Only "via "
+// details are ever suppressed — a "to run: " detail names the child about to
+// receive the secrets, which is a different process from the header's %q even
+// when the two render identically.
+const viaPrefix = "via "
+
+// callerDetailLine returns req.CallerDetail with terminal control characters
+// rendered visibly, or "" when it is empty or adds nothing beyond the dialog
+// header's %q. "Adds nothing" means: it is a "via " line and, after stripping
+// that prefix and any "X › " ancestor prefixes, what remains equals Caller,
+// case-insensitively.
+func callerDetailLine(req Request) string {
+	if req.CallerDetail == "" {
+		return ""
+	}
+	stripped, isVia := strings.CutPrefix(req.CallerDetail, viaPrefix)
+	if !isVia {
+		return sanitizeCallerDetail(req.CallerDetail)
+	}
+	if idx := strings.LastIndex(stripped, " › "); idx >= 0 {
+		stripped = stripped[idx+len(" › "):]
+	}
+	if strings.EqualFold(stripped, req.Caller) {
+		return ""
+	}
+	return sanitizeCallerDetail(req.CallerDetail)
+}
+
+// sanitizeCallerDetail prevents process-controlled argv from changing the
+// confirmation UI when it is printed to /dev/tty. C0 and C1 control
+// characters are rendered as visible escapes instead of being passed through.
+func sanitizeCallerDetail(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			fmt.Fprintf(&b, `\x%02x`, r)
+			continue
+		}
+		b.WriteRune(r)
 	}
 	return b.String()
 }

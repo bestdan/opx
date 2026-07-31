@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/bestdan/opx/internal/caller"
@@ -63,6 +64,22 @@ var diag io.Writer = io.Discard
 // diag is io.Discard.
 func diagf(format string, a ...any) { fmt.Fprintf(diag, format, a...) }
 
+// forgetOnce wraps a Runner so ForgetSession runs at most once per process.
+// Several exit paths call it (readAndForget, runSubcommand's pre-spawn
+// fail-closed call, and main's catch-all); the guard keeps the first call
+// authoritative and makes the rest no-ops, so `op signout` never runs twice
+// and the first call's error is what every caller observes.
+type forgetOnce struct {
+	oprunner.Runner
+	once sync.Once
+	err  error
+}
+
+func (f *forgetOnce) ForgetSession() error {
+	f.once.Do(func() { f.err = f.Runner.ForgetSession() })
+	return f.err
+}
+
 // envNameRE matches POSIX-portable shell variable names.
 var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -75,7 +92,7 @@ func main() {
 	if verbose {
 		diag = os.Stderr
 	}
-	runner := oprunner.NewWithStderr(diag)
+	runner := &forgetOnce{Runner: oprunner.NewWithStderr(diag)}
 	confirmer := prompt.NewWithStderr(diag)
 	spawner := spawn.New()
 
@@ -91,7 +108,14 @@ func main() {
 			os.Exit(exitOpFail)
 		}
 	}()
-	os.Exit(runWith(args, runner, confirmer, spawner))
+	code := runWith(args, runner, confirmer, spawner)
+	// Catch-all: the read paths forget on their own, but the denial and
+	// usage-error paths return before reaching them. Unconditional here so no
+	// exit path can leave a usable op session behind.
+	if err := runner.ForgetSession(); err != nil {
+		diagf("warning: op signout failed: %v\n", err)
+	}
+	os.Exit(code)
 }
 
 // wantVersion reports whether --version / -V appears anywhere in args.
@@ -252,8 +276,9 @@ func parseEnvPair(pair string) (prompt.Binding, error) {
 // if approved, reads each secret atomically.
 func confirmAndRead(bindings []prompt.Binding, envMode bool, r oprunner.Runner, c prompt.Confirmer) int {
 	req := prompt.Request{
-		Bindings: bindings,
-		Caller:   caller.Name(),
+		Bindings:     bindings,
+		Caller:       caller.Name(),
+		CallerDetail: "via " + caller.Describe(),
 	}
 	if err := c.Confirm(req); err != nil {
 		// Denial / dialog timeout / no UI all collapse to ErrDenied — that's
@@ -390,7 +415,11 @@ func runSubcommand(args []string, r oprunner.Runner, c prompt.Confirmer, sp spaw
 	// dotenv loader. ForgetSession is still called so any leftover session
 	// from a prior `op` invocation is cleared.
 	if len(bindings) > 0 {
-		req := prompt.Request{Bindings: bindings, Caller: caller.Name()}
+		req := prompt.Request{
+			Bindings:     bindings,
+			Caller:       caller.Name(),
+			CallerDetail: "to run: " + caller.RenderCommand(argv),
+		}
 		if err := c.Confirm(req); err != nil {
 			if errors.Is(err, prompt.ErrDenied) {
 				diagf("denied (%v)\n", err)
