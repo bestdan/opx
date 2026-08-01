@@ -17,7 +17,7 @@ The ten findings collapse into four groups, which is how the tasks are sliced:
 
 | # | Root cause | Findings | Tasks | Status |
 |---|---|---|---|---|
-| A | Dialog interpolates caller-controlled text without sanitization — `sanitizeCallerDetail` from `a58bd99` was never applied to `Binding.URI` / `Binding.Name` | F2, F4, F8 | [[sec_hardening_task_1]], [[sec_hardening_task_2]] | task 1 **merged** (#15); task 2 open |
+| A | Dialog interpolates caller-controlled text without sanitization — `sanitizeCallerDetail` from `a58bd99` was never applied to `Binding.URI` / `Binding.Name` | F2, F4, F8 | [[sec_hardening_task_1]], [[sec_hardening_task_2]] | both **merged** (#15, #25) |
 | B | Security-critical helper binaries (`osascript`, `ps`, `op`) resolved by bare name through caller-controlled PATH | **F1 (HIGH)**, F3, F5 | [[sec_hardening_task_3]], [[sec_hardening_task_4]], [[sec_hardening_task_5]] | tasks 3 (#14) and 4 (#22) **merged**; task 5 open |
 | C | Run-mode dialog understates the child that receives the secrets — `renderArgv` basenames path-like tokens, `RenderCommand` cuts at 120 runes | F7, F9, F10 | [[sec_hardening_task_6]] | **merged** (#16, + #19) |
 | D | Caller identity is the self-asserted `comm` string; the verifiable executable path is fetched and then discarded | F6 | [[sec_hardening_task_7]], [[sec_hardening_task_10]] | both **merged** (#23, #24) — F6 closed |
@@ -59,7 +59,7 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 ## Tasks
 
 1. ~~[[sec_hardening_task_1]] — Sanitize every dialog interpolation, not just `CallerDetail`~~ — **merged, #15** (+ `0bb2506`).
-2. [[sec_hardening_task_2]] — Reject C0/C1 control bytes in `uri.IsOPURI` so a forged URI fails before the prompt (F2, F4, F8, defense in depth).
+2. ~~[[sec_hardening_task_2]] — Reject C0/C1 control bytes in `uri.IsOPURI` so a forged URI fails before the prompt~~ — **merged, #25**, with the optional length cap included and the rune-vs-byte subtlety recorded in the task file.
 3. ~~[[sec_hardening_task_3]] — Resolve dialog helpers from a trusted absolute-path allowlist~~ — **merged, #14**.
 4. ~~[[sec_hardening_task_4]] — Invoke `ps` by absolute path with a minimal environment~~ — **merged, #22**.
 5. [[sec_hardening_task_5]] — Resolve `op` once, reject untrusted locations, fail closed (F5).
@@ -69,24 +69,29 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 9. [[sec_hardening_task_9]] — Graduate the durable decisions to `dev_docs/security-hardening.md` and delete this plan folder.
 10. ~~[[sec_hardening_task_10]] — Disclose the skipped ancestor chain instead of trusting the skip heuristic~~ — **merged, #24**. F6 fully closed. The obvious fix (matching `uninteresting` against the kernel basename) was rejected as unsound before implementation; step 4's open decision was settled as **suppress SIP-sealed entries, do not substitute argv**, for the reasons in the task file's Outcome section.
 
-Remaining order: **2**, then **5** once its open question is answered. Task 9 closes the plan out — and must carry task 7's correction *and* task 10's outcome into `dev_docs/security-hardening.md`, since that file will outlive this folder.
+11. [[sec_hardening_task_11]] — A non-printable rune in a legitimate item name (emoji ZWJ, option-space NBSP) makes `opx` unusable and reports it as a denial. Pre-existing, found while building task 2; not one of the ten scan findings.
+
+Remaining order: **5** once its open question is answered, then **11** (independent of everything else, and the only remaining item that is a user-visible bug rather than a hardening). Task 9 closes the plan out — and must carry task 7's correction, task 10's outcome, and task 2's rune-vs-byte reasoning into `dev_docs/security-hardening.md`, since that file will outlive this folder.
 
 ## Progress
 
 | | Task | Finding(s) | State |
 |---|---|---|---|
 | ✅ | 1 — sanitize every dialog interpolation | F2, F4, F8 | merged #15, + `0bb2506` |
-| ⬜ | 2 — reject control bytes in `uri.IsOPURI` | (defense in depth) | **next** — in progress |
+| ✅ | 2 — reject control bytes in `uri.IsOPURI` | (defense in depth) | merged #25 (`eff8e0e`) |
 | ✅ | 3 — resolve dialog helpers from absolute paths | **F1 (HIGH)** | merged #14 |
 | ✅ | 4 — `ps` by absolute path, minimal env | F3 | merged #22 |
-| ⬜ | 5 — resolve `op` once, fail closed | F5 | open — needs question 2 |
+| ⬜ | 5 — resolve `op` once, fail closed | F5 | **next** — needs question 2 answered |
 | ✅ | 6 — faithful run-mode child rendering | F7, F9, F10 | merged #16, + #19 |
 | ✅ | 7 — identity from exe path, not `comm` | F6 | merged #23 — impersonation closed |
 | ✅ | 8 — invariants + residual risk in docs | (none) | merged #20, + #21 |
 | ⬜ | 9 — graduate to `dev_docs/`, delete plan | (none) | last |
+| ⬜ | 11 — non-printable rune reads as a denial | (none — found in task 2) | open, independent |
 | ✅ | 10 — disclose the skipped ancestor chain | F6 (laundering half) | merged #24 (`20195dc`) |
 
-**9 of 10 findings closed** — F1, F2, F3, F4, F6, F7, F8, F9, F10. Outstanding: **F5** (task 5). Note what "F6 closed" does and does not mean: subject *selection* is still best-effort and cannot be made otherwise (a real shell is a legitimate ancestor and a plausible attacker at once), so what #24 closed is the *silent* half — paths are kernel-true and nothing between the subject and opx is absorbed unseen.
+**9 of 10 findings closed** — F1, F2, F3, F4, F6, F7, F8, F9, F10. Outstanding: **F5** (task 5), which is now the only scan finding left.
+
+Task 11 is not a scan finding — it is a pre-existing usability defect the task 2 work uncovered, tracked here because it lives in the same two invariants and would otherwise be forgotten. Note what "F6 closed" does and does not mean: subject *selection* is still best-effort and cannot be made otherwise (a real shell is a legitimate ancestor and a plausible attacker at once), so what #24 closed is the *silent* half — paths are kernel-true and nothing between the subject and opx is absorbed unseen.
 
 Not covered by any task: the **2 candidate sites the scan's verification panel left unreviewed** when it hit its budget. They are unexamined, not cleared, and closing every task below still leaves them that way.
 

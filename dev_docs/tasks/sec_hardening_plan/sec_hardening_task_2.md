@@ -2,7 +2,7 @@
 title: Reject control bytes in uri.IsOPURI so a forged URI fails before the prompt
 priority: medium
 size: 2
-status: new
+status: done
 created: 2026-07-31
 source_branch: bestdan/security-scan-fixes
 parent: sec_hardening
@@ -46,3 +46,17 @@ Real 1Password vault, item, and field names can contain spaces, unicode, and pun
 **User-run**
 
 - None; fully covered by tests.
+
+## Outcome — merged as #25 (`eff8e0e`)
+
+Landed as specified, plus the optional step-3 length cap (1024 bytes), flagged in the PR as the one hard limit on otherwise-legitimate input. Two findings from building it are worth keeping:
+
+**The C1 test has to be over runes, and that is not a style choice.** Bytes in `0x80`–`0x9f` are ordinary UTF-8 continuation bytes — verified that `‘quoted’`, `日本` and `—dash` all contain them — so a byte-wise scan would reject real vault names. `TestIsOPURI_AcceptsRealVaultNames` pins it so a later "hardening" to a byte scan fails loudly rather than quietly breaking unicode item names.
+
+**A rune check alone is not sufficient**, which the task file did not anticipate. Ranging over a string decodes an invalid byte as `U+FFFD`, so a raw `0x9b` passes a rune-only test. It cannot reach AppleScript — `sanitizeDisplay` ranges over runes too — but the user would approve a dialog reading `�` while `op` receives the original byte. Invalid UTF-8 is therefore rejected outright: **the approved text and the used text must be the same string.**
+
+**A reviewer finding that measurement overturned.** One reviewer reported that `U+2028`, `U+2029` and bidi overrides such as `U+202E` pass validation and "reach the confirmation dialog where they can break lines or alter text direction", and that the new `AGENTS.md` wording therefore overstated coverage. Building the exact AppleScript source `dialogScript` builds (`%q` of the body) and having `osascript` parse it showed all three **rejected** with syntax error `-2741`, i.e. failing closed to `ErrDenied` — invariant 6's second layer working as documented. The finding was dropped, and the reconciler reproduced the probe independently before agreeing. Worth recording because it is the mirror image of open question 7: there, an unverified claim nearly shipped a bug; here, an unverified claim would have bought an unnecessary widening of invariant 3.
+
+The same probe surfaced a pre-existing, unrelated defect, now [[sec_hardening_task_11]].
+
+**Also corrected here:** `README.md`'s "Not defended, today" section still listed `ps` alongside `op` as located via `PATH`, which #22 fixed. It predates this branch and was on `main`. Understating what is defended is the safe direction to be wrong in, but it is the paragraph a user reads to decide what they must compensate for.
