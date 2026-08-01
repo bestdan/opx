@@ -234,15 +234,24 @@ In all non-zero cases nothing reaches stdout — read `stderr` for the reason.
   macOS) to show the dialog. If it can't run — a daemonized job with no
   window server, for instance — the request is denied by design. Run `opx`
   interactively.
-- **A few invisible characters in an item name are refused, not shown.**
-  Directional formatting characters (bidi overrides and marks) and the
-  Unicode line/paragraph separators can re-order or break the rest of the
-  text around them, which would let a URI misrepresent which secret it
-  names. `opx` refuses to draw a dialog containing one: it exits 1 and
-  says which code point on stderr, rather than showing you something it
-  can't vouch for. Other invisible characters — the zero-width joiner in
-  an emoji sequence, the non-breaking space macOS types on option-space —
-  are shown as an escape like `\u200d` and read normally.
+- **`op://` references are ASCII-only — that is `op`'s rule, not `opx`'s.**
+  The 1Password CLI's own reference parser rejects every non-ASCII
+  character in a vault, item, or field name (`Café`, `日本`, an emoji, a
+  non-breaking space), so an item with a unicode name cannot be read by
+  name — use its item ID, which is ASCII. `opx` deliberately does not
+  duplicate that rule: it passes the URI through and lets `op`'s error
+  name the offending character. Run with `--verbose` to see it.
+- **A few invisible characters anywhere in the dialog are refused, not
+  shown.** Directional formatting characters (bidi overrides and marks)
+  and the Unicode line/paragraph separators can re-order or break the
+  text around them, which would let the dialog misrepresent what you are
+  approving. `opx` refuses to draw a dialog containing one: it exits 1
+  and says which code point on stderr, rather than showing you something
+  it can't vouch for. Every other invisible character — a zero-width
+  joiner, the non-breaking space macOS types on option-space — is shown
+  as an escape like `\u200d`. This applies to the whole dialog, not just
+  the URI: the calling program's path and, in `opx run`, the command you
+  typed are shown there too.
 - **The prompt beeps three times, and there is no setting to stop it.** The
   dialog plays your system alert sound so an access attempt is audible when it
   opens on another Space or behind a fullscreen window; the triple is what

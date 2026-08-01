@@ -334,17 +334,28 @@ func altersSurroundingText(r rune) bool {
 //
 //   - C0 and C1 control characters (`\x1b`, `\x0d`, …) — see message and
 //     dialogTitle for what each would otherwise break.
+//
 //   - Every other rune Go does not consider printable — U+200D, U+00A0,
 //     U+E0067, … — *except* the class below. (Named rather than shown: a raw
 //     one in this file would be invisible to whoever reads it next.) These
 //     have no effect beyond themselves, so showing an escape is a complete
 //     answer: the user sees precisely which code point is in the name, and
-//     the read proceeds with the real string. This is the class ordinary item names actually contain
-//     — U+200D joins an emoji sequence, U+00A0 is what option-space types, the
-//     U+E0000 tag characters build flag emoji — and before it was escaped here
-//     it was caught downstream by dialogScript's %q, which made any item whose
-//     name carries an emoji ZWJ sequence unreadable through opx, and reported
-//     that as a denial.
+//     the read proceeds with the real string. Before they were escaped here,
+//     dialogScript's %q caught them instead — which took down the whole
+//     request, and blamed the user for it.
+//
+//     Be exact about which requests that rescues, because the obvious answer
+//     is wrong. Not the URI: `op`'s own secret-reference parser accepts a
+//     restricted ASCII set and rejects every non-ASCII rune (verified
+//     2026-08-01 — `é`, `日`, `—`, an emoji, an NBSP all rejected), so a URI
+//     naming an item by such a name never resolved, opx or no opx. What is
+//     rescued is every *other* string in the dialog — the caller name, the
+//     origin path, the through line, and in `opx run` the child command —
+//     none of which op parses. An option-space in a directory name used to
+//     make opx report a denial for an ordinary ASCII URI, which is the worse
+//     bug of the two: the failure had nothing to do with the secret being
+//     read.
+//
 //   - The runes altersSurroundingText names are deliberately **not** escaped:
 //     they are left raw for %q to escape and AppleScript to reject. That is a
 //     fail-closed, not an omission, and dropping them into the class above

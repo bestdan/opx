@@ -46,6 +46,16 @@ const maxURI = 1024
 //     vault names — 1Password names legitimately carry spaces, punctuation and
 //     unicode, which is why this rejects control characters specifically rather
 //     than "anything unusual".
+//
+//     Do not read that as "such a URI resolves". `op`'s own secret-reference
+//     parser accepts a restricted ASCII set — verified 2026-08-01, it rejects
+//     `é`, `日`, `—`, `‘`, an emoji, an NBSP, an ASCII apostrophe and a tab —
+//     so an item with a unicode name is reachable only by its ASCII item ID.
+//     That rule still does not belong here: it is `op`'s parser, `op`'s error
+//     names the offending character precisely, and a copy of it here would
+//     reject names a future `op` accepts. What the rune test buys is that opx
+//     is not the thing rejecting them.
+//
 //   - A rune scan alone. Ranging over a string decodes an invalid byte as
 //     U+FFFD, so a raw 0x9b sent as a single byte passes a rune-only test.
 //     That byte cannot reach AppleScript (sanitizeDisplay also ranges over

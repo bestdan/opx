@@ -139,6 +139,15 @@ deliberate intent.
      `—dash` all contain them), so a byte scan would reject real vault
      names. 1Password names legitimately carry spaces, punctuation and
      unicode.
+     What that does **not** mean is that such a URI resolves. `op`'s own
+     secret-reference parser accepts only a restricted ASCII set —
+     verified 2026-08-01, it rejects `é`, `日`, `—`, `‘`, an emoji, an
+     NBSP, an ASCII apostrophe and a tab — so an item with a unicode
+     name is reachable only by its (ASCII) item ID. `IsOPURI` must
+     still not encode that rule: it is `op`'s parser, `op`'s error is
+     the authoritative one, and a copy here would reject names a future
+     `op` accepts. The point of the rune-vs-byte test is that opx is
+     not the thing doing the rejecting.
    - Invalid UTF-8 is rejected because ranging over a string decodes a
      bad byte as `U+FFFD`, so a raw `0x9b` passes a rune-only test. It
      cannot reach AppleScript — `sanitizeDisplay` ranges over runes too
@@ -194,11 +203,16 @@ deliberate intent.
    - **Narrowing it** — escaping bidi controls visibly too — removes
      the fail-closed and leaves nothing but an escaper holding the one
      dialog that authorizes the read.
-   - **Widening it** — leaving more runes raw — makes ordinary
-     1Password items unreadable through opx. That was the state before
-     task 11: `%q` held the whole non-printable range, so an item named
-     with an emoji ZWJ sequence, or with the U+00A0 that macOS types on
-     option-space, could not be read at all.
+   - **Widening it** — leaving more runes raw — takes down whole
+     requests over a rune in *any* dialog string. That was the state
+     before task 11: `%q` held the entire non-printable range, so a
+     U+00A0 anywhere — a caller's directory name, an `opx run` child
+     command — failed the script and reported a denial, for a URI that
+     was ordinary ASCII. Be exact about the URI case, because the
+     obvious reading is wrong: `op`'s own secret-reference parser
+     rejects every non-ASCII rune (see invariant 3), so an item named
+     with an emoji ZWJ sequence was never readable by name anyway.
+     What this boundary governs is the rest of the dialog.
    - **Enumerating the set** instead of asking `unicode` for it rots.
      The list drafted for exactly this purpose omitted U+061C, U+200E
      and U+200F.
