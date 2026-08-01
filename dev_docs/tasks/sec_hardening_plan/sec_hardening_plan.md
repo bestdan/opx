@@ -84,7 +84,7 @@ Remaining order: **10** (F6's remaining half, while the `internal/caller` contex
 | ◐ | 7 — identity from exe path, not `comm` | F6 | merged #23 — impersonation closed, laundering open |
 | ✅ | 8 — invariants + residual risk in docs | (none) | merged #20, + #21 |
 | ⬜ | 9 — graduate to `dev_docs/`, delete plan | (none) | last |
-| ⬜ | 10 — disclose the skipped ancestor chain | F6 (laundering half) | **next**, after #23 merges |
+| ⬜ | 10 — disclose the skipped ancestor chain | F6 (laundering half) | **next** — #23 merged (`7d99f44`) |
 
 **8½ of 10 findings closed** — F1, F2, F3, F4, F7, F8, F9, F10, and the impersonation half of F6. Outstanding: **F5** (task 5), and F6's **attribution laundering** half, which #23 documented as invariant 9 rather than closing.
 
