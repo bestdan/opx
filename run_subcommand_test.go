@@ -285,6 +285,56 @@ func TestRunSubcommand_BadOPURIRejected(t *testing.T) {
 	}
 }
 
+// TestRunSubcommand_ControlLadenURIRejected extends the malformed-URI rule
+// above to control characters: an env-file value that starts with op:// but
+// carries an escape is a usage error, not a literal to pass through to the
+// child. Both halves matter — the dialog is never drawn, and the child never
+// runs, so neither the user nor the child sees anything the value's author
+// chose.
+// Both run-mode input paths are covered: an --env-file value and an inline
+// --env pair. They converge on the same IsOPURI call, but they reach it through
+// different parsing (splitEnvPair deliberately does not validate), so the claim
+// "the child never runs" is asserted per input mode rather than once.
+func TestRunSubcommand_ControlLadenURIRejected(t *testing.T) {
+	cases := []struct {
+		name   string
+		value  string
+		inline bool
+	}{
+		{name: "CR in env file", value: "op://V/I/f\rop://decoy/I/f"},
+		{name: "ESC in env file", value: "op://V/I/f\x1b[2K"},
+		{name: "invalid UTF-8 in env file", value: "op://V/I/f" + string([]byte{0x9b})},
+		{name: "over the length cap in env file", value: "op://V/I/" + strings.Repeat("f", 1100)},
+		{name: "ESC in inline --env", value: "op://V/I/f\x1b[2K", inline: true},
+		{name: "invalid UTF-8 in inline --env", value: "op://V/I/f" + string([]byte{0x9b}), inline: true},
+		{name: "over the length cap in inline --env", value: "op://V/I/" + strings.Repeat("f", 1100), inline: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeRunner{}
+			fc := allow()
+			fs := &fakeSpawner{}
+			args := []string{"run"}
+			if tc.inline {
+				args = append(args, "--env=FOO="+tc.value)
+			} else {
+				args = append(args, "--env-file="+writeEnvFile(t, "FOO="+tc.value+"\n"))
+			}
+			args = append(args, "--", "echo")
+			code := runWith(args, fr, fc, fs)
+			if code != exitUsage {
+				t.Errorf("exit = %d, want %d", code, exitUsage)
+			}
+			if fc.calls != 0 {
+				t.Errorf("Confirm called %d times, want 0 — validation precedes the prompt", fc.calls)
+			}
+			if fs.called != 0 {
+				t.Errorf("spawn called %d times, want 0 — a control-laden op:// value must not reach the child", fs.called)
+			}
+		})
+	}
+}
+
 func TestRunSubcommand_DialogCoversAllURIs(t *testing.T) {
 	envPath := writeEnvFile(t, "A=op://V/A/f\nB=op://V/B/f\n")
 	fr := &fakeRunner{secrets: map[string][]byte{

@@ -49,13 +49,14 @@ command, and the environment `opx` inherits.
 
 **Not defended, today:**
 
-- `ps` and `op` are still located via `PATH`. A process that controls `PATH`
-  can supply its own — making the dialog name a program you trust, or letting
-  the `op signout` that ends the session silently do nothing. Both are known
-  gaps with fixes in progress. Until they land, these two guarantees hold
-  only against a caller that cannot influence the `PATH` `opx` inherits —
-  and a process that launches `opx` sets that `PATH` itself, so in practice
-  assume they do not hold against a hostile caller.
+- `op` is still located via `PATH`. A process that controls `PATH` can supply
+  its own, letting the `op signout` that ends the session silently do nothing.
+  It is a known gap with a fix in progress. Until it lands, the guarantee that
+  the session is invalidated holds only against a caller that cannot influence
+  the `PATH` `opx` inherits — and a process that launches `opx` sets that
+  `PATH` itself, so in practice assume it does not hold against a hostile
+  caller. (`ps` and `lsof`, which identify the calling process, are no longer
+  in this bullet: they are located at fixed absolute paths.)
 - An attacker who can already write to a directory like `/usr/local/bin`, or
   edit your shell profile, is outside what `opx` can reach. It hardens a
   specific, cheap, ambient vector; it is not a defense against a fully
