@@ -526,9 +526,12 @@ func exePath(pid int) string {
 	if lsof == "" {
 		return ""
 	}
-	// -F n emits machine-readable field lines; -d txt -a restricts to the text
-	// vnode, keeping the output to the executable and its linked libraries.
-	cmd := exec.Command(lsof, "-p", strconv.Itoa(pid), "-F", "n", "-a", "-d", "txt")
+	// -F fn emits machine-readable field lines; -d txt -a restricts them to
+	// text-vnode entries. Apple's lsof (4.91) emits the `f` field whether or
+	// not it is requested — it delimits each file set — so `-F n` and `-F fn`
+	// are byte-identical there; `f` is named explicitly because the parser
+	// depends on it and an implicit field is a silent dependency.
+	cmd := exec.Command(lsof, "-p", strconv.Itoa(pid), "-F", "fn", "-a", "-d", "txt")
 	cmd.Env = toolEnv
 	out, err := cmd.Output()
 	if err != nil {
@@ -537,10 +540,15 @@ func exePath(pid int) string {
 	return parseLsofTxt(string(out))
 }
 
-// parseLsofTxt extracts the executable path from `lsof -F n -d txt` output.
+// parseLsofTxt extracts the executable path from `lsof -F fn -d txt` output.
 // The format is a `p<pid>` line followed by repeating `f<fd>` / `n<name>`
-// pairs; the first txt entry is the executable itself and the rest are linked
-// libraries (dyld and friends), so the first name after the first `ftxt` wins.
+// pairs.
+//
+// The executable is the first txt entry; everything after it is some other
+// text-mapped file — dyld, shared libraries, and (observed on zsh) locale data
+// such as /usr/share/locale/en_US.UTF-8/LC_COLLATE. So the first name after
+// the first `ftxt` wins, and taking a later one would name a data file as the
+// caller.
 //
 // Only absolute paths are accepted: anything else means the output was not
 // what this parser expects, and a half-understood path is worse than none.
