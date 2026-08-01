@@ -916,9 +916,12 @@ func TestParseLsofTxt(t *testing.T) {
 		{
 			// The whole point of the batch: several processes, each mapped to
 			// its own first txt entry, with sections in lsof's order rather
-			// than the order the pids were requested in. The 999999 entry
-			// pins that a pid with no section reads as "" rather than
-			// borrowing a neighbour's path.
+			// than the order the pids were requested in. 999999 is checked
+			// via wantAbsent rather than listed in want: the parser never
+			// sees the requested pid set, so what is pinned is that a pid
+			// with no section produces no entry at all — it cannot borrow a
+			// neighbour's path. A map read could not express that, since a
+			// missing key and an explicit "" are the same value.
 			name: "multiple processes each get their own path",
 			out: "p8837\nftxt\nn/Applications/Ghostty.app/Contents/MacOS/ghostty\nftxt\nn/usr/lib/dyld\n" +
 				"p60233\nftxt\nn/bin/zsh\nftxt\nn/usr/share/locale/en_US.UTF-8/LC_COLLATE\n" +
