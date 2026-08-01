@@ -38,25 +38,27 @@ command, and the environment `opx` inherits.
 - Text the caller controls — the URI, the bound variable name, the process
   name — cannot inject terminal or AppleScript control sequences to repaint
   or forge the dialog.
-- In `opx run`, the dialog names the child that will receive the secrets by
-  its full path, and shows its arguments — quoted, unshortened, and up to a
-  bounded width. Anything past that width is disclosed as a count of omitted
-  arguments rather than silently dropped, so the destination cannot be
-  hidden by padding the command line.
-- The dialog helper (`osascript`) is located at a fixed absolute path, so a
-  binary planted earlier on `PATH` cannot stand in for it and approve the
-  request itself.
+- In `opx run`, the dialog names the child that will receive the secrets
+  exactly as you wrote it, never shortened to a bare program name, with its
+  arguments quoted and unshortened up to a bounded width. Anything past that
+  width is disclosed as a count of omitted arguments rather than silently
+  dropped, so the destination cannot be hidden by padding the command line.
+- Every helper `opx` runs is located at a fixed absolute path rather than
+  through `PATH`: the dialog helper (`osascript`), the two tools that
+  identify the calling process (`ps`, `lsof`), and `op` itself. A binary
+  planted earlier on `PATH` cannot stand in for any of them — it cannot
+  approve the request in place of the dialog, name a program you trust in
+  place of the real caller, or pretend to end the session while leaving it
+  live. (The child command in `opx run` is the one you typed, and is
+  resolved the way your shell would resolve it.)
 
 **Not defended, today:**
 
-- `op` is still located via `PATH`. A process that controls `PATH` can supply
-  its own, letting the `op signout` that ends the session silently do nothing.
-  It is a known gap with a fix in progress. Until it lands, the guarantee that
-  the session is invalidated holds only against a caller that cannot influence
-  the `PATH` `opx` inherits — and a process that launches `opx` sets that
-  `PATH` itself, so in practice assume it does not hold against a hostile
-  caller. (`ps` and `lsof`, which identify the calling process, are no longer
-  in this bullet: they are located at fixed absolute paths.)
+- `opx` trusts your `op` install. Fixing the location `op` is loaded from
+  does not make the binary there genuine: `op` normally lives in a Homebrew
+  prefix your own account owns, so anything already running as you can
+  replace it. That is a bigger compromise than `opx` is scoped to survive,
+  and it defeats every `op read` you run, not just the ones through `opx`.
 - An attacker who can already write to a directory like `/usr/local/bin`, or
   edit your shell profile, is outside what `opx` can reach. It hardens a
   specific, cheap, ambient vector; it is not a defense against a fully

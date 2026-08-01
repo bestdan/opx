@@ -190,25 +190,63 @@ deliberate intent.
    it; if that test is in your way, you are removing the guard, not the
    noise.
 7. **Security-critical helpers are resolved from compiled-in absolute
-   paths, never PATH.** Two screeners do this, deliberately duplicated
+   paths, never PATH.** Three screeners do this, deliberately duplicated
    rather than shared: `resolveHelper` in `internal/prompt` (covering
-   `osascript` and the `defaults` appearance query) and `resolveTool` in
-   `internal/caller` (covering `ps` and `lsof`). Both accept only a
+   `osascript` and the `defaults` appearance query), `resolveTool` in
+   `internal/caller` (covering `ps` and `lsof`), and `resolveOp` in
+   `internal/oprunner` (covering `op`). All accept only a
    regular, executable, non-group/world-writable file at a compiled-in
    absolute path. `caller` cannot import `prompt` — `main` composes
-   both — and the two candidate lists have no reason to move together.
+   both — and the three candidate lists have no reason to move together.
    PATH belongs to the process opx is prompting the user about, so a
    helper found there is the caller choosing what answers its own
    dialog — and a helper that exits 0 is indistinguishable from the user
    clicking Allow. The same argument covers the identity tools: they
-   decide the name the dialog attributes the read to. Every invocation
-   also runs with an explicit minimal environment
-   (`PATH=/bin:/usr/bin`, `LC_ALL=C`) rather than the inherited one. When
+   decide the name the dialog attributes the read to. Every
+   **identity-tool** invocation (`ps`, `lsof`) also runs with an explicit
+   minimal environment (`PATH=/bin:/usr/bin`, `LC_ALL=C`) rather than the
+   inherited one. `osascript` and `op` inherit opx's environment — `op`
+   necessarily, since it needs `OP_ACCOUNT` and its own config — so for
+   those two the absolute-path rule is the whole of the protection, not the
+   environment. Verified that this opens no split: with a forged `HOME`,
+   `op signout --all` exits non-zero, so `ForgetSession` fails closed, and
+   `ReadSecret` inherits the same environment and fails the same way. When
    no trusted tool resolves, `caller` degrades to `"unknown"` or to an
    omitted path line — the honest answer, and the only one available.
-   **`op` (`internal/oprunner`) is still resolved by bare name and is not
-   yet covered**; closing that is outstanding work, not a documented
-   exemption.
+   `op` is resolved **once at construction** and the path reused for both
+   `ReadSecret` and `ForgetSession`. That is a correctness requirement, not
+   an optimization: two lookups re-run the candidate scan, so a file
+   appearing at an earlier candidate between the calls could serve the
+   signout while the real `op` served the read — one biometric prompt paid,
+   session never invalidated. What this pins is the **path, not the
+   binary**: what sits at that path can still be swapped between the two
+   calls. That residual is knowingly left open — it needs write access to
+   an accepted absolute location, and an attacker holding that wins before
+   any race. A resolution failure is recorded on the
+   runner and returned by **both** methods, so in `opx run` it fails
+   closed through invariant 2's path and the child is not spawned.
+
+   **`resolveOp` does not inherit the other two screeners' safety
+   argument, and must not be documented as if it did.** `resolveHelper`
+   and `resolveTool` are safe partly because their real candidates live on
+   the SIP-sealed system volume, where no account can write. `op`'s usual
+   home is a Homebrew prefix owned by the invoking user (`/opt/homebrew/bin`
+   is `drwxrwxr-x`), so anything running as the user can replace it. What
+   `resolveOp` buys is narrower and is the whole of the finding: **the
+   caller's PATH no longer chooses** the binary. Injecting a PATH entry —
+   or dropping `node_modules/.bin/op`, which npm puts first on PATH for
+   every script it runs — is ephemeral, targeted, and invisible.
+   Overwriting the machine's real `op` is persistent, global, and already
+   total victory independent of opx.
+
+   The candidate list must stay **absolute and free of anything derived
+   from the environment**. `~/.local/bin/op` is a real install location and
+   was deliberately left out: there is no `~` at runtime, it comes from
+   `$HOME`, and `$HOME` is set by the same caller that sets `PATH` — a
+   HOME-derived candidate is a PATH allowlist wearing another variable's
+   name. The list is matched **before** symlink resolution, because
+   `/opt/homebrew/bin/op` is a symlink into a versioned Caskroom path, and
+   canonicalizing it would break the rule on every `op` upgrade.
 8. **`caller.RenderCommand`'s output is an authorization statement, not
    a summary.** In `opx run` it is the only disclosure of which process
    receives the plaintext secrets, so it keeps full paths and full

@@ -506,6 +506,29 @@ func TestRunSubcommand_ForgetFailure_NoSpawn(t *testing.T) {
 	}
 }
 
+// TestRunSubcommand_OpResolutionFailure_NoSpawn is the run-mode half of the
+// PATH hardening: when no trusted `op` resolves, the runner returns that error
+// from every method, and run mode must treat it exactly as it treats a signout
+// failure — exit exitOpFail, spawn nothing. A child spawned here would run with
+// whatever session state was already live, which is the outcome the whole
+// resolution rule exists to prevent.
+func TestRunSubcommand_OpResolutionFailure_NoSpawn(t *testing.T) {
+	envPath := writeEnvFile(t, "FOO=op://V/I/f\n")
+	resolveErr := errors.New("no usable op binary: looked for /opt/homebrew/bin/op, ...")
+	// Both methods fail, which is how a resolution failure differs from a
+	// signout failure: there is no binary to read with either.
+	fr := &fakeRunner{readErr: resolveErr, forgetErr: resolveErr}
+	fs := &fakeSpawner{}
+
+	code := runWith([]string{"run", "--env-file=" + envPath, "--", "echo"}, fr, allow(), fs)
+	if code != exitOpFail {
+		t.Errorf("exit = %d, want %d", code, exitOpFail)
+	}
+	if fs.called != 0 {
+		t.Errorf("spawn called %d times with no usable op; want 0", fs.called)
+	}
+}
+
 // TestOriginLine covers the wording of the dialog's origin line against
 // synthetic identities, since a live process tree cannot produce an anomalous
 // path on demand. The empty case matters most: an unknown path must yield no
