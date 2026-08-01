@@ -18,7 +18,7 @@ The ten findings collapse into four groups, which is how the tasks are sliced:
 | # | Root cause | Findings | Tasks | Status |
 |---|---|---|---|---|
 | A | Dialog interpolates caller-controlled text without sanitization — `sanitizeCallerDetail` from `a58bd99` was never applied to `Binding.URI` / `Binding.Name` | F2, F4, F8 | [[sec_hardening_task_1]], [[sec_hardening_task_2]] | both **merged** (#15, #25) |
-| B | Security-critical helper binaries (`osascript`, `ps`, `op`) resolved by bare name through caller-controlled PATH | **F1 (HIGH)**, F3, F5 | [[sec_hardening_task_3]], [[sec_hardening_task_4]], [[sec_hardening_task_5]] | tasks 3 (#14) and 4 (#22) **merged**; task 5 open |
+| B | Security-critical helper binaries (`osascript`, `ps`, `op`) resolved by bare name through caller-controlled PATH | **F1 (HIGH)**, F3, F5 | [[sec_hardening_task_3]], [[sec_hardening_task_4]], [[sec_hardening_task_5]] | all **merged** (#14, #22, #26) |
 | C | Run-mode dialog understates the child that receives the secrets — `renderArgv` basenames path-like tokens, `RenderCommand` cuts at 120 runes | F7, F9, F10 | [[sec_hardening_task_6]] | **merged** (#16, + #19) |
 | D | Caller identity is the self-asserted `comm` string; the verifiable executable path is fetched and then discarded | F6 | [[sec_hardening_task_7]], [[sec_hardening_task_10]] | both **merged** (#23, #24) — F6 closed |
 
@@ -62,7 +62,7 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 2. ~~[[sec_hardening_task_2]] — Reject C0/C1 control bytes in `uri.IsOPURI` so a forged URI fails before the prompt~~ — **merged, #25**, with the optional length cap included and the rune-vs-byte subtlety recorded in the task file.
 3. ~~[[sec_hardening_task_3]] — Resolve dialog helpers from a trusted absolute-path allowlist~~ — **merged, #14**.
 4. ~~[[sec_hardening_task_4]] — Invoke `ps` by absolute path with a minimal environment~~ — **merged, #22**.
-5. [[sec_hardening_task_5]] — Resolve `op` once, reject untrusted locations, fail closed (F5).
+5. ~~[[sec_hardening_task_5]] — Resolve `op` once, reject untrusted locations, fail closed~~ — **merged, #26**. Landed as a wide compiled-in candidate list rather than the `LookPath`-plus-denylist this plan originally specified; see open question 2.
 6. ~~[[sec_hardening_task_6]] — Render the run-mode child command faithfully~~ — **merged, #16** (+ #19).
 7. ~~[[sec_hardening_task_7]] — Base caller identity on the executable path, not the self-asserted `comm`~~ — **merged, #23**, but its premise was wrong and the task file carries the correction: macOS `ps -o comm=` is forgeable, so the path comes from `lsof`.
 8. ~~[[sec_hardening_task_8]] — Record the merged invariants and the residual risk~~ — **merged, #20** (+ #21, which added the `%q` layer to invariant 6 and a test pinning it).
@@ -71,7 +71,7 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 
 11. [[sec_hardening_task_11]] — A non-printable rune in a legitimate item name (emoji ZWJ, option-space NBSP) makes `opx` unusable and reports it as a denial. Pre-existing, found while building task 2; not one of the ten scan findings.
 
-Remaining order: **5** once its open question is answered, then **11** (independent of everything else, and the only remaining item that is a user-visible bug rather than a hardening). Task 9 closes the plan out — and must carry task 7's correction, task 10's outcome, and task 2's rune-vs-byte reasoning into `dev_docs/security-hardening.md`, since that file will outlive this folder.
+Remaining order: **11** (independent of everything else, and the only remaining item that is a user-visible bug rather than a hardening). Task 9 closes the plan out — and must carry task 7's correction, task 10's outcome, and task 2's rune-vs-byte reasoning into `dev_docs/security-hardening.md`, since that file will outlive this folder.
 
 ## Progress
 
@@ -81,15 +81,17 @@ Remaining order: **5** once its open question is answered, then **11** (independ
 | ✅ | 2 — reject control bytes in `uri.IsOPURI` | (defense in depth) | merged #25 (`eff8e0e`) |
 | ✅ | 3 — resolve dialog helpers from absolute paths | **F1 (HIGH)** | merged #14 |
 | ✅ | 4 — `ps` by absolute path, minimal env | F3 | merged #22 |
-| ⬜ | 5 — resolve `op` once, fail closed | F5 | **next** — needs question 2 answered |
+| ✅ | 5 — resolve `op` once, fail closed | F5 | merged #26 (`92177b9`) |
 | ✅ | 6 — faithful run-mode child rendering | F7, F9, F10 | merged #16, + #19 |
 | ✅ | 7 — identity from exe path, not `comm` | F6 | merged #23 — impersonation closed |
 | ✅ | 8 — invariants + residual risk in docs | (none) | merged #20, + #21 |
-| ⬜ | 9 — graduate to `dev_docs/`, delete plan | (none) | last |
-| ⬜ | 11 — non-printable rune reads as a denial | (none — found in task 2) | open, independent |
+| ⬜ | 9 — graduate to `dev_docs/`, delete plan | (none) | **last** |
+| ⬜ | 11 — non-printable rune reads as a denial | (none — found in task 2) | **next** |
 | ✅ | 10 — disclose the skipped ancestor chain | F6 (laundering half) | merged #24 (`20195dc`) |
 
-**9 of 10 findings closed** — F1, F2, F3, F4, F6, F7, F8, F9, F10. Outstanding: **F5** (task 5), which is now the only scan finding left.
+**All 10 findings closed** — F1, F2, F3, F4, F5, F6, F7, F8, F9, F10.
+
+What "closed" does and does not mean, in the two places it is weaker than it sounds. **F6:** subject *selection* is still best-effort and cannot be made otherwise — a real shell is a legitimate ancestor and a plausible attacker at once — so what #24 closed is the *silent* half: paths are kernel-true and nothing between the subject and opx is absorbed unseen. **F5:** `op` now comes from a fixed location, which stops the caller's PATH choosing the binary; it does not make the binary at that location genuine, since a Homebrew prefix is user-owned.
 
 Task 11 is not a scan finding — it is a pre-existing usability defect the task 2 work uncovered, tracked here because it lives in the same two invariants and would otherwise be forgotten. Note what "F6 closed" does and does not mean: subject *selection* is still best-effort and cannot be made otherwise (a real shell is a legitimate ancestor and a plausible attacker at once), so what #24 closed is the *silent* half — paths are kernel-true and nothing between the subject and opx is absorbed unseen.
 

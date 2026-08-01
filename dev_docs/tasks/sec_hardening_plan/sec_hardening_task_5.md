@@ -2,7 +2,7 @@
 title: Resolve op once, reject untrusted locations, fail closed
 priority: high
 size: 3
-status: new
+status: done
 created: 2026-07-31
 source_branch: bestdan/security-scan-fixes
 parent: sec_hardening
@@ -57,3 +57,21 @@ The classic delivery is `node_modules/.bin/op` plus an `npm run dev` script that
 - Create `./node_modules/.bin/op` as an `exit 0` script, put it first on PATH, and confirm it is **never invoked** — opx uses the real `op` and the shim's marker never appears.
 
   **Corrected after implementation.** This criterion originally read "confirm opx now refuses with the descriptive error", which belongs to the looser rule that was not chosen: there, the shim is *found* through PATH and then rejected. Under the compiled-in candidate list opx never consults PATH, so the shim is simply inert and the run succeeds normally. Assert non-invocation (a marker file the shim writes), not refusal — otherwise a passing implementation reads as a failing test.
+
+## Outcome — merged as #26 (`92177b9`)
+
+Implemented as the **strict compiled-in candidate list, made wide** — see open question 2 in [[sec_hardening_plan]] for why the strict-vs-loose framing in this file's Context was the wrong axis. Steps 2–4 landed as written; step 1 was replaced (no `exec.LookPath`, no `EvalSymlinks`, no cwd/`node_modules` denylist), which also removed the `t.Setenv("PATH")` test machinery this file specified.
+
+**What the fix actually buys, stated because the obvious reading is wrong.** `/opt/homebrew/bin` is group-writable and its `op` is a user-owned symlink, so the list does not establish that the binary is genuine, and `resolveHelper`'s SIP-sealed-volume argument does not transfer. It establishes that the caller's PATH does not choose. Recorded in `resolveOp`'s doc comment and in invariant 7 so nobody copies the SIP reasoning across.
+
+**Demonstrated end to end**, with the counterfactual, because the criterion below was worth proving rather than asserting:
+
+- Pre-change build (`origin/main`) against a real `./node_modules/.bin/op` shim first on PATH: the shim received **both** calls — `read` (forwarded to the real `op`, so the run looked normal) and `signout --all` (silently discarded). Exit 0, no stderr, secret delivered.
+- Post-change: the shim's marker never appeared. `op` came from `/opt/homebrew/bin/op`.
+- Session behaviour: after a real `signout --all` the next read is prompted (4.9s); with no signout, a second read is unprompted (938ms). The signout does invalidate; swallowing it does switch the property off.
+
+**Not demonstrated, and the PR says so:** an attacker in a *different* process inheriting the surviving session. A raw `op read` straight after the neutered-signout run was itself prompted (6.4s), so 1Password's cached authorization is scoped in a way that test did not reproduce. The finding rests on what was measured — opx's signout was entirely under the shim's control while opx reported success.
+
+**Co-review found one live defect, in the fix's own prose.** The resolution error told the user to run `sudo ln -s "$(command -v op)" /usr/local/bin/op` — resolving the source through the very input the change stops trusting, with sudo, durably, at an accepted location. Reachable by the same adversary: rename the real `op` aside to force the error, then supply the PATH the remediation consults. The reconciler additionally caught three doc overclaims, all verified in source before editing: invariant 7's "every invocation runs with an explicit minimal environment" (only `internal/caller` sets `cmd.Env`; `osascript` and `op` inherit), the README's "every binary opx runs" (false for the `opx run` child, which is PATH-resolved and is the process that receives the secrets), and "names the child by its full path" (`RenderCommand` renders `argv[0]` as typed).
+
+Checked and clear: `op` inherits opx's environment by design, so a forged `HOME` was tested as a way to split the read from the signout. `op signout --all` exits non-zero under it, so ForgetSession fails closed and ReadSecret fails identically. No split.
