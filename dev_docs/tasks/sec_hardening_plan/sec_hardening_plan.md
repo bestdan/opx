@@ -20,7 +20,7 @@ The ten findings collapse into four groups, which is how the tasks are sliced:
 | A | Dialog interpolates caller-controlled text without sanitization — `sanitizeCallerDetail` from `a58bd99` was never applied to `Binding.URI` / `Binding.Name` | F2, F4, F8 | [[sec_hardening_task_1]], [[sec_hardening_task_2]] | task 1 **merged** (#15); task 2 open |
 | B | Security-critical helper binaries (`osascript`, `ps`, `op`) resolved by bare name through caller-controlled PATH | **F1 (HIGH)**, F3, F5 | [[sec_hardening_task_3]], [[sec_hardening_task_4]], [[sec_hardening_task_5]] | tasks 3 (#14) and 4 (#22) **merged**; task 5 open |
 | C | Run-mode dialog understates the child that receives the secrets — `renderArgv` basenames path-like tokens, `RenderCommand` cuts at 120 runes | F7, F9, F10 | [[sec_hardening_task_6]] | **merged** (#16, + #19) |
-| D | Caller identity is the self-asserted `comm` string; the verifiable executable path is fetched and then discarded | F6 | [[sec_hardening_task_7]] | **merged** (#23) — impersonation closed, attribution laundering still open |
+| D | Caller identity is the self-asserted `comm` string; the verifiable executable path is fetched and then discarded | F6 | [[sec_hardening_task_7]], [[sec_hardening_task_10]] | task 7 **merged** (#23) — impersonation closed; task 10 open for attribution laundering |
 
 Group B contained the only HIGH: a planted `zenity` that exits `0` **was** the approval, and its presence also suppressed the `/dev/tty` fallback, so no prompt appeared at all.
 
@@ -67,8 +67,9 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 7. ~~[[sec_hardening_task_7]] — Base caller identity on the executable path, not the self-asserted `comm`~~ — **merged, #23**, but its premise was wrong and the task file carries the correction: macOS `ps -o comm=` is forgeable, so the path comes from `lsof`. F6 is half closed.
 8. ~~[[sec_hardening_task_8]] — Record the merged invariants and the residual risk~~ — **merged, #20** (+ #21, which added the `%q` layer to invariant 6 and a test pinning it).
 9. [[sec_hardening_task_9]] — Graduate the durable decisions to `dev_docs/security-hardening.md` and delete this plan folder.
+10. [[sec_hardening_task_10]] — Disclose the skipped ancestor chain instead of trusting the skip heuristic (F6's attribution-laundering half). Added after #23; the obvious fix — matching `uninteresting` against the kernel basename — was examined and **rejected as unsound**, with the reasoning recorded in the task file so it is not re-proposed.
 
-Remaining order: **2**, then **5** once its open question is answered. Task 9 closes the plan out — and must carry task 7's correction into `dev_docs/security-hardening.md`, since that file will outlive this folder.
+Remaining order: **10** (F6's remaining half, while the `internal/caller` context is fresh), then **2**, then **5** once its open question is answered. Task 9 closes the plan out — and must carry task 7's correction into `dev_docs/security-hardening.md`, since that file will outlive this folder.
 
 ## Progress
 
@@ -83,6 +84,7 @@ Remaining order: **2**, then **5** once its open question is answered. Task 9 cl
 | ◐ | 7 — identity from exe path, not `comm` | F6 | merged #23 — impersonation closed, laundering open |
 | ✅ | 8 — invariants + residual risk in docs | (none) | merged #20, + #21 |
 | ⬜ | 9 — graduate to `dev_docs/`, delete plan | (none) | last |
+| ⬜ | 10 — disclose the skipped ancestor chain | F6 (laundering half) | **next**, after #23 merges |
 
 **8½ of 10 findings closed** — F1, F2, F3, F4, F7, F8, F9, F10, and the impersonation half of F6. Outstanding: **F5** (task 5), and F6's **attribution laundering** half, which #23 documented as invariant 9 rather than closing.
 
