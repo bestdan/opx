@@ -156,9 +156,10 @@ func Name() string {
 // Describe returns a one-line human label for the dialog body: the subject
 // process's argv, optionally prefixed with a further
 // non-shell/terminal/multiplexer ancestor above it, truncated to 120
-// characters. argv[0] renders as the full executable path `ps` reported —
-// distinguishing /usr/local/bin/claude from ~/.cache/claude is the entire
-// point — while the remaining arguments stay path-shortened. When argv is
+// characters. argv[0] renders as the kernel-reported executable path (see
+// exePath — never the forgeable one `ps` prints), since distinguishing
+// /usr/local/bin/claude from ~/.cache/claude is the entire point, while the
+// remaining arguments stay path-shortened. When argv is
 // unavailable it falls back to the executable path, or to the subject's comm
 // when even that is unknown. When the subject's argv is a single token (no
 // arguments), no ancestor prefix is added — that leaves the caller
@@ -208,7 +209,15 @@ func describeSubject(subject process, chain []process) string {
 func describeArgv(exe string, argv []string, aboveComms []string) string {
 	desc := renderAncestorArgv(argv)
 	if exe != "" {
-		desc = strings.TrimSpace(exe + " " + renderAncestorArgs(argv[1:]))
+		// argv[1:] would panic on an empty argv. No production call site
+		// reaches here with one — describeSubject checks first — but the test
+		// hook does, and a helper that panics on an empty slice is a trap for
+		// the next caller.
+		var args []string
+		if len(argv) > 0 {
+			args = argv[1:]
+		}
+		desc = strings.TrimSpace(exe + " " + renderAncestorArgs(args))
 	}
 	if len(argv) == 1 {
 		return truncate(desc, 120)
@@ -485,7 +494,7 @@ func parsePPIDComm(out string) (ppid int, comm string, ok bool) {
 	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
 	line = strings.TrimSpace(line)
 	// ps right-aligns the ppid column, so the leading token ends at the first
-	// space run; everything after it is the reported command.
+	// space or tab; everything after it is the reported command.
 	idx := strings.IndexAny(line, " \t")
 	if idx < 0 {
 		return 0, "", false
@@ -559,6 +568,13 @@ func parseLsofTxt(out string) string {
 	for _, line := range strings.Split(out, "\n") {
 		switch {
 		case line == "ftxt":
+			// A second txt record before any name means the first one carried
+			// no usable name. Falling through to this one would name a linked
+			// library as the caller, so give up instead — the whole point of
+			// this lookup is to not misattribute the request.
+			if seenTxt {
+				return ""
+			}
 			seenTxt = true
 		case seenTxt && strings.HasPrefix(line, "n"):
 			path := line[1:]

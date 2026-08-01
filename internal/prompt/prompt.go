@@ -66,9 +66,12 @@ type Request struct {
 	CallerDetail string
 
 	// CallerOrigin is an optional fully-rendered line naming where the calling
-	// executable lives (e.g. "from /Users/x/.cache/claude (unverified
-	// location)"), shown above CallerDetail. Like CallerDetail, the caller
-	// words its own prefix.
+	// executable lives (e.g. "from /Users/x/.cache/claude"), shown above
+	// CallerDetail. Like CallerDetail, the caller words its own prefix.
+	//
+	// It states the path and stops. opx does not classify a location as
+	// expected or suspicious — see caller.Identity for why an allowlist fires
+	// on legitimate callers — so this line must not grow judgment text.
 	//
 	// It exists because Caller is a basename and CallerDetail does not always
 	// carry a path: in `opx run` the detail line describes the *child* about to

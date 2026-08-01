@@ -714,3 +714,27 @@ func TestParseLsofTxt(t *testing.T) {
 		})
 	}
 }
+
+// TestDescribeArgv_EmptyArgvWithExe pins that the helper does not panic on an
+// empty argv. No production path reaches it that way — describeSubject checks
+// first — but it did panic (slice bounds out of range [1:0]), and a helper
+// that panics on an empty slice is a trap for the next caller.
+func TestDescribeArgv_EmptyArgvWithExe(t *testing.T) {
+	if got := caller.DescribeArgvForTest("/usr/local/bin/claude", nil, nil); got != "/usr/local/bin/claude" {
+		t.Errorf("DescribeArgvForTest with empty argv = %q, want %q", got, "/usr/local/bin/claude")
+	}
+	if got := caller.DescribeArgvForTest("", nil, nil); got != "" {
+		t.Errorf("DescribeArgvForTest with empty argv and no exe = %q, want %q", got, "")
+	}
+}
+
+// TestParseLsofTxt_NamelessFirstRecordIsNotSkipped is the misattribution
+// guard. If the first txt record carries no name, continuing to the next one
+// would report a linked library as the caller — naming the wrong file in the
+// one dialog that authorizes the read. Giving up is the honest answer.
+func TestParseLsofTxt_NamelessFirstRecordIsNotSkipped(t *testing.T) {
+	out := "p1\nftxt\nftxt\nn/usr/lib/dyld\n"
+	if got := caller.ParseLsofTxtForTest(out); got != "" {
+		t.Errorf("parseLsofTxt = %q, want \"\" — a nameless first txt record must not fall through to a library", got)
+	}
+}
