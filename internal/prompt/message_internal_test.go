@@ -295,6 +295,41 @@ func TestConfirmDarwin_UndisplayableRuneIsNotADenial(t *testing.T) {
 	}
 }
 
+// TestConfirmDarwin_UndisplayableRuneCaughtInEveryField pins the same property
+// for the fields that are not URIs — and it earns its place because the caller
+// name reaches the check by a route that is easy to break.
+//
+// message() puts the caller through its header's %q, which escapes the rune
+// before undisplayableRune ever sees the body. What catches it is dialogTitle,
+// which interpolates with %s. So "an undisplayable rune anywhere in the request
+// is reported as one" currently rests on dialogTitle *not* quoting — and adding
+// a %q there, a plausible reading of invariant 6, would silently send this case
+// back to reporting a denial. This test is what fails if that happens.
+func TestConfirmDarwin_UndisplayableRuneCaughtInEveryField(t *testing.T) {
+	const rlo = "\u202e"
+	for _, tc := range []struct {
+		name string
+		req  Request
+	}{
+		{"caller", Request{Caller: "claude" + rlo + "hs.yolped"}},
+		{"caller detail", Request{Caller: "claude", CallerDetail: "to run: /bin/sh" + rlo + "gnip"}},
+		{"caller origin", Request{Caller: "claude", CallerOrigin: "from /tmp/x" + rlo + "gnip"}},
+		{"caller through", Request{Caller: "claude", CallerThrough: "through /bin/zsh" + rlo}},
+		{"binding name", Request{Caller: "claude", Bindings: []Binding{
+			{Name: "A" + rlo + "B", URI: "op://V/I/f"}, {Name: "C", URI: "op://V/I/g"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := tc.req
+			if req.Bindings == nil {
+				req.Bindings = []Binding{{URI: "op://V/I/f"}}
+			}
+			if err := confirmDarwin(req, io.Discard); !errors.Is(err, ErrUndisplayable) {
+				t.Errorf("confirmDarwin err = %v, want ErrUndisplayable", err)
+			}
+		})
+	}
+}
+
 // TestConfirmDarwin_UndisplayableErrorNamesTheCodePointOnly guards the one
 // place this error is allowed to describe caller-controlled text. It names the
 // code point; it must not echo the string, because the error reaches stderr
