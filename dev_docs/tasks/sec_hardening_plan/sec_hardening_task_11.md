@@ -164,3 +164,58 @@ so a later change adding `%q` to `dialogTitle`, which invariant 6's own
 emphasis invites, would have sent that case quietly back to reporting a
 denial. `TestConfirmDarwin_UndisplayableRuneCaughtInEveryField` now covers
 every caller-controlled field, and says why.
+
+### Correction — the premise this task was written on is wrong
+
+Found by running the user-run acceptance criterion, after the PR was open,
+reviewed and believed correct.
+
+**`op`'s own secret-reference parser accepts a restricted ASCII set.**
+Verified 2026-08-01 against the real binary, which rejects before any vault
+lookup:
+
+```
+op://…/Café/f      invalid character in secret reference: 'é'
+op://…/日本/f       '日'
+op://…/🔑/f        '🔑'      ← plain emoji, which AppleScript accepts fine
+op://…/a<NBSP>b/f  ' '
+op://…/quote'/f    '''       ← an ASCII apostrophe
+op://…/a_b-c.d/f   accepted
+op://…/<item-id>/f accepted
+```
+
+So an item named `👨‍💻 Work` was **never readable by name**, opx or no opx —
+only by its ASCII item ID. This task's opening sentence ("cannot be read
+through opx at all") is true and misleading in the same breath: the read was
+already impossible one layer down, and no change to `opx` makes it work.
+
+What survives, and it is not small:
+
+- **The rescued case is every dialog string `op` never parses** — the caller
+  name, the origin path, the through line, and in `opx run` the child
+  command. An option-space in a directory name used to fail the AppleScript
+  and report `denied (access denied by user)` **for a URI that was ordinary
+  ASCII**. That is the worse of the two bugs, and the one that survives the
+  correction: the failure had nothing to do with the secret being read.
+- **The false denial is gone** in every case, including the URI one, which
+  now surfaces op's own error naming the offending character.
+- **The design choice is unaffected.** Option 1 would now be actively worse:
+  opx guessing at op's charset, duplicating a rule that is op's to enforce,
+  and still not touching the caller-path case.
+
+`AGENTS.md` invariant 3 and `internal/uri`'s comment took a related
+correction. Their rune-vs-byte argument is intact, but "1Password names
+legitimately carry spaces, punctuation and unicode" was being read as "such
+a URI resolves". `IsOPURI` must still not encode op's charset — it is op's
+parser, op's error names the character, and a copy here would reject names a
+future op accepts.
+
+**How it survived.** Three external reviewers, a reconciler, and the author
+all read a change whose stated purpose was making a name readable; none
+asked whether the layer below would accept it. The task file asserted the
+outcome, the fix plainly produced the described dialog, and the dialog was
+mistaken for the goal. This is failure mode 3 on this plan in its purest
+form — an unstated premise, in a task file whose stated premises all held —
+and it was caught by the one acceptance criterion nobody could run from a
+terminal. **The user-run criteria are not ceremony.** Two of them on this
+plan have now found something no code-enforced criterion could.
