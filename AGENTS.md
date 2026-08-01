@@ -8,7 +8,8 @@ this repository. Humans should read `README.md` first.
 `opx` is a small Go CLI that wraps the 1Password `op` binary to force a
 biometric prompt on every secret read and to invalidate the `op` session
 token after every invocation. It targets **macOS only** — the confirm
-dialog is AppleScript and the caller lookup shells out to `ps`; other
+dialog is AppleScript and the caller lookup shells out to `ps` and `lsof`;
+other
 platforms are not supported or tested. It is a **security tool**: changes that
 weaken the trust boundary need to be flagged explicitly, not slipped in
 as cleanup.
@@ -19,7 +20,7 @@ as cleanup.
 main.go                 # entry point; argument parsing, exit codes, signal & panic handling
 main_test.go            # end-to-end tests of run() with fake Runner/Confirmer
 run_subcommand_test.go  # tests for `opx run` (fake Runner/Confirmer/Spawner)
-internal/caller/        # parent process name (ppid → `ps`)
+internal/caller/        # caller identity: ppid/name via `ps`, executable path via `lsof`
 internal/envfile/       # dotenv-style NAME=VALUE parser used by `opx run --env-file`
 internal/oprunner/      # `op read` / `op signout` subprocess wrapper (Runner interface)
 internal/prompt/        # native macOS confirm dialog (osascript)
@@ -164,23 +165,22 @@ deliberate intent.
 7. **Security-critical helpers are resolved from compiled-in absolute
    paths, never PATH.** Two screeners do this, deliberately duplicated
    rather than shared: `resolveHelper` in `internal/prompt` (covering
-   `osascript` and the `defaults` appearance query) and `psPath` in
-   `internal/caller` (covering `ps`). Both accept only a regular,
-   executable, non-group/world-writable file at a compiled-in absolute
-   path. `caller` cannot import `prompt` — `main` composes both — and
-   the two candidate lists have no reason to move together.
+   `osascript` and the `defaults` appearance query) and `resolveTool` in
+   `internal/caller` (covering `ps` and `lsof`). Both accept only a
+   regular, executable, non-group/world-writable file at a compiled-in
+   absolute path. `caller` cannot import `prompt` — `main` composes
+   both — and the two candidate lists have no reason to move together.
    PATH belongs to the process opx is prompting the user about, so a
    helper found there is the caller choosing what answers its own
    dialog — and a helper that exits 0 is indistinguishable from the user
-   clicking Allow. The same argument covers `ps`: it is the only source
-   of caller identity since opx narrowed to macOS, so a planted `ps`
-   picks the name the dialog attributes the read to. Both `ps`
-   invocations also run with an explicit minimal environment
+   clicking Allow. The same argument covers the identity tools: they
+   decide the name the dialog attributes the read to. Every invocation
+   also runs with an explicit minimal environment
    (`PATH=/bin:/usr/bin`, `LC_ALL=C`) rather than the inherited one. When
-   no trusted `ps` resolves, `caller` degrades to `"unknown"` — the
-   honest answer, and the only one available. **`op`
-   (`internal/oprunner`) is still resolved by bare name and is not yet
-   covered**; closing that is outstanding work, not a documented
+   no trusted tool resolves, `caller` degrades to `"unknown"` or to an
+   omitted path line — the honest answer, and the only one available.
+   **`op` (`internal/oprunner`) is still resolved by bare name and is not
+   yet covered**; closing that is outstanding work, not a documented
    exemption.
 8. **`caller.RenderCommand`'s output is an authorization statement, not
    a summary.** In `opx run` it is the only disclosure of which process
@@ -191,6 +191,31 @@ deliberate intent.
    however similar they look: abbreviation is a readability win when
    describing a process that already ran, and a lie when describing one
    about to be handed secrets.
+9. **The caller path shown in the dialog comes from the kernel, never
+   from `ps`.** `caller.exePath` reads the text vnode via
+   `lsof -F n -d txt`; `internal/caller` must not display a path taken
+   from `ps -o comm=`. This is not a stylistic preference. Despite
+   printing what looks like a full path, macOS `ps` derives `comm` from
+   the process's **own arguments**: a binary at `/tmp/x` that execs
+   itself with `argv[0] = "/usr/local/bin/claude"` is reported by `ps` as
+   `/usr/local/bin/claude`. Verified directly — with a forged `argv[0]`,
+   `ps -o comm=` echoed the forgery while `lsof` reported the real path.
+   So a dialog sourcing its path from `ps` would let the caller name its
+   own location, which is exactly the finding the path was added to
+   close. `ps` is still used for the ppid walk and for the basename fed
+   to `isUninteresting` — both tolerate a self-asserted source; a
+   displayed path does not.
+   Two limits are deliberate and should stay documented rather than
+   quietly fixed. **`isUninteresting` is still matched against the
+   `ps` basename**, so a process can still opt into being skipped by
+   naming itself `bash` and have its request attributed to a genuinely
+   trusted ancestor — the path shown is then honestly that ancestor's.
+   Closing that means resolving every ancestor's path, not just the
+   subject's. And **opx does not classify the path** as expected or
+   suspicious: a location allowlist fires on real callers (Claude Code
+   installs under `~/.local/share`, npm under `~/.npm-global`, cargo
+   under `~/.cargo/bin`), and a marker that cries wolf on the ordinary
+   case trains the user to click through it.
 
 If a change appears to remove or weaken any of these, call it out
 explicitly in the PR description rather than burying it in a refactor.

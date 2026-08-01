@@ -64,6 +64,22 @@ type Request struct {
 	// names the child that will receive the secrets, which is a different
 	// process from the header's even when the two render identically.
 	CallerDetail string
+
+	// CallerOrigin is an optional fully-rendered line naming where the calling
+	// executable lives (e.g. "from /Users/x/.cache/claude"), shown above
+	// CallerDetail. Like CallerDetail, the caller words its own prefix.
+	//
+	// It states the path and stops. opx does not classify a location as
+	// expected or suspicious — see caller.Identity for why an allowlist fires
+	// on legitimate callers — so this line must not grow judgment text.
+	//
+	// It exists because Caller is a basename and CallerDetail does not always
+	// carry a path: in `opx run` the detail line describes the *child* about to
+	// receive the secrets, so without this line the dialog would identify the
+	// requesting process only by a name it chose for itself. Empty means the
+	// path is unknown — the line is then omitted entirely rather than rendered
+	// as a reassuring blank.
+	CallerOrigin string
 }
 
 // Confirmer presents the user with a confirmation dialog.
@@ -151,6 +167,17 @@ func (s *systemConfirmer) Confirm(req Request) error {
 // and it sanitizes for the same reasons.
 func message(req Request) string {
 	detail := callerDetailLine(req)
+	// The origin line is caller-controlled too — a process chooses where its
+	// executable sits — so it is sanitized like every other interpolation.
+	// When present it precedes the detail line, and the two are joined into
+	// one block so a mode that has both renders them adjacent.
+	if origin := sanitizeDisplay(req.CallerOrigin); origin != "" {
+		if detail != "" {
+			detail = origin + "\n" + detail
+		} else {
+			detail = origin
+		}
+	}
 	caller := sanitizeDisplay(req.Caller)
 	if len(req.Bindings) == 1 && req.Bindings[0].Name == "" {
 		// %q stays on top of the sanitized name: it escapes the non-printable

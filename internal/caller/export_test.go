@@ -2,16 +2,17 @@ package caller
 
 import "testing"
 
-// PSPathForTest exposes the unexported ps resolver to tests in the
-// caller_test package without making it part of the public API.
-func PSPathForTest(candidates []string) string { return psPath(candidates) }
+// ResolveToolForTest exposes the unexported helper-binary resolver to tests in
+// the caller_test package without making it part of the public API.
+func ResolveToolForTest(candidates []string) string { return resolveTool(candidates) }
 
-// PSCandidatesForTest exposes the compiled-in ps candidate list so tests can
-// assert its shape without hardcoding it.
-func PSCandidatesForTest() []string { return psCandidates }
+// PSCandidatesForTest and LsofCandidatesForTest expose the compiled-in
+// candidate lists so tests can assert their shape without hardcoding them.
+func PSCandidatesForTest() []string   { return psCandidates }
+func LsofCandidatesForTest() []string { return lsofCandidates }
 
-// PSEnvForTest exposes the environment both ps invocations run with.
-func PSEnvForTest() []string { return psEnv }
+// ToolEnvForTest exposes the environment every identity lookup runs with.
+func ToolEnvForTest() []string { return toolEnv }
 
 // WithPSCandidatesForTest swaps the compiled-in ps candidate list for the
 // duration of the test, restoring it afterwards. It is the only way to
@@ -44,6 +45,33 @@ func TruncateForTest(s string, n int) string { return truncate(s, n) }
 // DescribeArgvForTest exposes the unexported describeArgv helper — the core
 // of Describe()'s rendering logic decoupled from real process ancestry — to
 // tests in the caller_test package without making it part of the public API.
-func DescribeArgvForTest(argv []string, aboveComms []string) string {
-	return describeArgv(argv, aboveComms)
+func DescribeArgvForTest(exe string, argv []string, aboveComms []string) string {
+	return describeArgv(exe, argv, aboveComms)
+}
+
+// IdentityForTest builds the Identity a subject process would produce, without
+// a live process tree. It is the whole rendering path Current() runs — name
+// selection, anomaly classification, and detail line — so tests can assert
+// what the dialog says about a process at a given path.
+func IdentityForTest(comm, exe string, argv []string, aboveComms []string) Identity {
+	subject := process{pid: 1, comm: comm, exe: exe, argv: argv}
+	chain := []process{subject}
+	for i, c := range aboveComms {
+		chain = append(chain, process{pid: i + 2, comm: c})
+	}
+	return identityOf(subject, chain)
+}
+
+// IdentityNameForTest exposes the header-label choice between the verified
+// executable path and the self-asserted comm.
+func IdentityNameForTest(exe, comm string) string { return identityName(exe, comm) }
+
+// ParseLsofTxtForTest exposes the lsof field-output parser, so the extraction
+// of the kernel-reported executable path is testable without a real lsof.
+func ParseLsofTxtForTest(out string) string { return parseLsofTxt(out) }
+
+// ParsePPIDCommForTest exposes the `ps -o ppid=,comm=` line parser so the
+// ppid/basename extraction is testable without a real ps.
+func ParsePPIDCommForTest(out string) (ppid int, comm string, ok bool) {
+	return parsePPIDComm(out)
 }

@@ -399,3 +399,93 @@ func TestDialogScript_BeepIsNotConfigurable(t *testing.T) {
 		t.Errorf("environment suppressed the beep: %q", got)
 	}
 }
+
+// TestMessage_CallerOriginRunMode is the run-mode disclosure: the detail line
+// there describes the child about to receive the secrets, so the origin line
+// is the only place the dialog says where the *requesting* process lives.
+func TestMessage_CallerOriginRunMode(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{Name: "AWS_KEY", URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerOrigin: "from /Users/x/.cache/claude (unverified location)",
+		CallerDetail: "to run: /usr/bin/env node ./deploy.js",
+	})
+	want := "\"claude\" wants to read 1 secret:\n\n" +
+		"from /Users/x/.cache/claude (unverified location)\n" +
+		"to run: /usr/bin/env node ./deploy.js\n\n" +
+		"  • op://V/I/f  →  $AWS_KEY"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerOriginSingle pins the same line in the single-URI branch,
+// so the two branches cannot drift apart.
+func TestMessage_CallerOriginSingle(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerOrigin: "from /usr/local/bin/claude",
+		CallerDetail: "via /usr/local/bin/claude --resume",
+	})
+	want := "\"claude\" wants to read:\n\n" +
+		"from /usr/local/bin/claude\n" +
+		"via /usr/local/bin/claude --resume\n\n" +
+		"op://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerOriginAloneRenders covers an origin line with no detail
+// line beside it — the detail can be suppressed as duplicative, and the origin
+// must not disappear with it.
+func TestMessage_CallerOriginAloneRenders(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerOrigin: "from /usr/local/bin/claude",
+		CallerDetail: "via claude",
+	})
+	want := "\"claude\" wants to read:\n\n" +
+		"from /usr/local/bin/claude\n\n" +
+		"op://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerOriginEmptyOmitsLine: an unknown path is an honest gap,
+// and must not render as a blank line implying one was checked.
+func TestMessage_CallerOriginEmptyOmitsLine(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerDetail: "via claude --resume",
+	})
+	want := "\"claude\" wants to read:\n\nvia claude --resume\n\nop://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerOriginEscapesTerminalControlCharacters: the executable
+// path is caller-controlled — a process chooses where it lives — so the origin
+// line is subject to invariant 6 like every other interpolation. A CR here
+// would repaint the one dialog that authorizes the read.
+func TestMessage_CallerOriginEscapesTerminalControlCharacters(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerOrigin: "from /tmp/evil\r\x1b[2Kfrom /usr/local/bin/claude",
+	})
+	if strings.ContainsAny(got, "\r\x1b") {
+		t.Errorf("message passed a raw control character through: %q", got)
+	}
+	if !strings.Contains(got, `\x0d`) || !strings.Contains(got, `\x1b`) {
+		t.Errorf("message = %q, want the control bytes rendered visibly as \\x0d and \\x1b", got)
+	}
+	if !strings.Contains(got, "/tmp/evil") {
+		t.Errorf("message = %q, want the real path still shown", got)
+	}
+}
