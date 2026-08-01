@@ -2,7 +2,7 @@
 title: Disclose the skipped ancestor chain instead of trusting the skip heuristic
 priority: medium
 size: 3
-status: new
+status: done
 created: 2026-08-01
 source_branch: bestdan/security-scan-fixes
 parent: sec_hardening
@@ -71,6 +71,14 @@ The invariant that can actually be made true, stated, and tested: **every proces
 
 - Run `opx op://V/I/f` from a plain terminal and confirm the dialog reads cleanly with no through line (all skipped ancestors SIP-sealed).
 - Copy a shell to `~/.cache/tools/bash`, run `opx` beneath it, and confirm it appears in the through line at its real path.
+
+## Outcome — merged as #24 (`20195dc`)
+
+**Step 4 was decided as: suppress SIP-sealed entries; do not substitute argv.** Everything on the through line is then kernel-reported or the literal `unknown`, so a reader never has to adjudicate which entries to believe. argv is self-asserted: `through zsh deploy.sh` reads as reassurance while naming a script that need not exist, and its coverage is thin anyway — a script fed on stdin, or an `argv[0]` forged to a single token, both evade it. Failure mode (3) is not closable by disclosure at all, since an interpreted script has no kernel identity, so the real choice was between a quiet true line and a noisy forgeable one. Recorded in `throughPaths`' doc comment and in invariant 9.
+
+**A premise this file did not carry, found by running it:** `lsof` exits **1 — silently, nothing on stderr — when _any_ requested pid yields no match**, while still printing complete sections for the pids it did resolve. A root-owned `login` anywhere in range is enough. The inherited `if err != nil { return "" }` would therefore have blanked the *whole chain* in the ordinary case — and no test in the acceptance criteria above would have caught it, since they all feed the parser directly. The batched call now ignores exit status deliberately, with the reason in both the code and invariant 9. Open question 7's lesson at one remove: every claim this file made was checked; the one that bit was the claim it did not make.
+
+**Co-review found one real defect, and it was the usual class.** The through line is joined with `" › "`, and a path can *contain* that separator. A shell planted under a user-created `.../Downloads › /bin` yields the kernel-true path `/Users/x/Downloads › /bin/zsh`, which rendered as **two** entries, the second reading as a SIP-sealed `/bin/zsh` — every path genuine, the entry count and one entry's apparent trustworthiness forged. `sanitizeDisplay` does not cover it: `›` is printable U+203A. Entries now go through `quoteForDisplay`, truncated to 120 runes first so the closing quote is never what gets cut, since the URI being approved renders *after* this block. That is the third separator/quoting bug on this plan.
 
 ## Verification note
 

@@ -20,7 +20,7 @@ The ten findings collapse into four groups, which is how the tasks are sliced:
 | A | Dialog interpolates caller-controlled text without sanitization — `sanitizeCallerDetail` from `a58bd99` was never applied to `Binding.URI` / `Binding.Name` | F2, F4, F8 | [[sec_hardening_task_1]], [[sec_hardening_task_2]] | task 1 **merged** (#15); task 2 open |
 | B | Security-critical helper binaries (`osascript`, `ps`, `op`) resolved by bare name through caller-controlled PATH | **F1 (HIGH)**, F3, F5 | [[sec_hardening_task_3]], [[sec_hardening_task_4]], [[sec_hardening_task_5]] | tasks 3 (#14) and 4 (#22) **merged**; task 5 open |
 | C | Run-mode dialog understates the child that receives the secrets — `renderArgv` basenames path-like tokens, `RenderCommand` cuts at 120 runes | F7, F9, F10 | [[sec_hardening_task_6]] | **merged** (#16, + #19) |
-| D | Caller identity is the self-asserted `comm` string; the verifiable executable path is fetched and then discarded | F6 | [[sec_hardening_task_7]], [[sec_hardening_task_10]] | task 7 **merged** (#23) — impersonation closed; task 10 open for attribution laundering |
+| D | Caller identity is the self-asserted `comm` string; the verifiable executable path is fetched and then discarded | F6 | [[sec_hardening_task_7]], [[sec_hardening_task_10]] | both **merged** (#23, #24) — F6 closed |
 
 Group B contained the only HIGH: a planted `zenity` that exits `0` **was** the approval, and its presence also suppressed the `/dev/tty` fallback, so no prompt appeared at all.
 
@@ -64,29 +64,29 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 4. ~~[[sec_hardening_task_4]] — Invoke `ps` by absolute path with a minimal environment~~ — **merged, #22**.
 5. [[sec_hardening_task_5]] — Resolve `op` once, reject untrusted locations, fail closed (F5).
 6. ~~[[sec_hardening_task_6]] — Render the run-mode child command faithfully~~ — **merged, #16** (+ #19).
-7. ~~[[sec_hardening_task_7]] — Base caller identity on the executable path, not the self-asserted `comm`~~ — **merged, #23**, but its premise was wrong and the task file carries the correction: macOS `ps -o comm=` is forgeable, so the path comes from `lsof`. F6 is half closed.
+7. ~~[[sec_hardening_task_7]] — Base caller identity on the executable path, not the self-asserted `comm`~~ — **merged, #23**, but its premise was wrong and the task file carries the correction: macOS `ps -o comm=` is forgeable, so the path comes from `lsof`.
 8. ~~[[sec_hardening_task_8]] — Record the merged invariants and the residual risk~~ — **merged, #20** (+ #21, which added the `%q` layer to invariant 6 and a test pinning it).
 9. [[sec_hardening_task_9]] — Graduate the durable decisions to `dev_docs/security-hardening.md` and delete this plan folder.
-10. [[sec_hardening_task_10]] — Disclose the skipped ancestor chain instead of trusting the skip heuristic (F6's attribution-laundering half). Added after #23; the obvious fix — matching `uninteresting` against the kernel basename — was examined and **rejected as unsound**, with the reasoning recorded in the task file so it is not re-proposed.
+10. ~~[[sec_hardening_task_10]] — Disclose the skipped ancestor chain instead of trusting the skip heuristic~~ — **merged, #24**. F6 fully closed. The obvious fix (matching `uninteresting` against the kernel basename) was rejected as unsound before implementation; step 4's open decision was settled as **suppress SIP-sealed entries, do not substitute argv**, for the reasons in the task file's Outcome section.
 
-Remaining order: **10** (F6's remaining half, while the `internal/caller` context is fresh), then **2**, then **5** once its open question is answered. Task 9 closes the plan out — and must carry task 7's correction into `dev_docs/security-hardening.md`, since that file will outlive this folder.
+Remaining order: **2**, then **5** once its open question is answered. Task 9 closes the plan out — and must carry task 7's correction *and* task 10's outcome into `dev_docs/security-hardening.md`, since that file will outlive this folder.
 
 ## Progress
 
 | | Task | Finding(s) | State |
 |---|---|---|---|
 | ✅ | 1 — sanitize every dialog interpolation | F2, F4, F8 | merged #15, + `0bb2506` |
-| ⬜ | 2 — reject control bytes in `uri.IsOPURI` | (defense in depth) | **next** |
+| ⬜ | 2 — reject control bytes in `uri.IsOPURI` | (defense in depth) | **next** — in progress |
 | ✅ | 3 — resolve dialog helpers from absolute paths | **F1 (HIGH)** | merged #14 |
 | ✅ | 4 — `ps` by absolute path, minimal env | F3 | merged #22 |
 | ⬜ | 5 — resolve `op` once, fail closed | F5 | open — needs question 2 |
 | ✅ | 6 — faithful run-mode child rendering | F7, F9, F10 | merged #16, + #19 |
-| ◐ | 7 — identity from exe path, not `comm` | F6 | merged #23 — impersonation closed, laundering open |
+| ✅ | 7 — identity from exe path, not `comm` | F6 | merged #23 — impersonation closed |
 | ✅ | 8 — invariants + residual risk in docs | (none) | merged #20, + #21 |
 | ⬜ | 9 — graduate to `dev_docs/`, delete plan | (none) | last |
-| ⬜ | 10 — disclose the skipped ancestor chain | F6 (laundering half) | **next** — #23 merged (`7d99f44`) |
+| ✅ | 10 — disclose the skipped ancestor chain | F6 (laundering half) | merged #24 (`20195dc`) |
 
-**8½ of 10 findings closed** — F1, F2, F3, F4, F7, F8, F9, F10, and the impersonation half of F6. Outstanding: **F5** (task 5), and F6's **attribution laundering** half, which #23 documented as invariant 9 rather than closing.
+**9 of 10 findings closed** — F1, F2, F3, F4, F6, F7, F8, F9, F10. Outstanding: **F5** (task 5). Note what "F6 closed" does and does not mean: subject *selection* is still best-effort and cannot be made otherwise (a real shell is a legitimate ancestor and a plausible attacker at once), so what #24 closed is the *silent* half — paths are kernel-true and nothing between the subject and opx is absorbed unseen.
 
 Not covered by any task: the **2 candidate sites the scan's verification panel left unreviewed** when it hit its budget. They are unexamined, not cleared, and closing every task below still leaves them that way.
 
@@ -108,5 +108,7 @@ Not covered by any task: the **2 candidate sites the scan's verification panel l
 7. **A task spec is not evidence.** Task 7 asserted that macOS `ps -o comm=` returns an unforgeable executable path. It does not — `ps` echoes the process's own `argv[0]` — and implementing the task as written would have made the dialog vouch for an attacker-chosen location, which is worse than the gap it was closing. The false claim survived planning, re-baselining, and an unblocking review, because it was written by analogy to Linux's `/proc/<pid>/exe` (where it *is* true) and read plausibly every time.
 
    For task 5, which rests on comparable claims about where `op` lives and how `exec.LookPath` behaves: **run the thing before building on what the plan says about it.** The forgery took one throwaway Go program to demonstrate. Every claim in a task file that begins "X returns…" or "Y cannot be forged" is a claim someone should have tested, and on this plan, twice now, nobody had.
+
+   **Task 10 adds the sharper corollary: check the claims the file *didn't* make.** Every assertion in task 10's file had been run before it was written, and all of them held. What nearly shipped a bug was an unstated premise inherited from #23 — that `lsof` returning non-zero means the lookup failed. It exits **1, silently, when any one requested pid yields no match**, while still printing the sections it resolved, so a root-owned `login` in range would have blanked the entire chain through the retained `if err != nil { return "" }`. None of the acceptance criteria would have caught it: they all feed the parser directly, never the subprocess. When a change widens what a command is asked for (one pid → many), re-run the command's *failure* modes, not just its success path.
 
    **Task 4 adds a corollary about the checking itself.** Its "identity is unchanged" claim was checked with `go test`, which replayed a **cached** result from an earlier sandboxed run and reported `Name() == "unknown"` — a fabricated regression that a second, uncached run disproved. The Bash sandbox also cannot exec the setuid `/bin/ps` at all, so *any* sandboxed run of `internal/caller` exercises the degradation path rather than the real one. For task 5, and for anything else touching `internal/caller`: verify behaviour with `go test -count=1`, unsandboxed, or the evidence is about the harness rather than the change.
