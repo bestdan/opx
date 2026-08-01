@@ -71,7 +71,7 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 
 11. ~~[[sec_hardening_task_11]] — A non-printable rune in a legitimate item name (emoji ZWJ, option-space NBSP) makes `opx` unusable and reports it as a denial~~ — **PR #27, open**. Pre-existing, found while building task 2; not one of the ten scan findings. Took the third of the three candidate directions, but replaced its hand-maintained list with `unicode.Bidi_Control` ∪ `Zl` ∪ `Zp` — the objection to that option was that a list rots, and the list sketched in the task file had already dropped three of the twelve. Invariant 6's boundary moves; `AGENTS.md` says so in the same change.
 
-Remaining order: **9 only** — task 11 is in review as #27. Task 9 closes the plan out — and must carry task 7's correction, task 10's outcome, and task 2's rune-vs-byte reasoning into `dev_docs/security-hardening.md`, since that file will outlive this folder.
+Remaining order: **9 only** — task 11 is in review as #27. Task 9 closes the plan out — and must carry task 7's correction, task 10's outcome, task 2's rune-vs-byte reasoning **and task 11's correction to it** (`op` rejects non-ASCII in secret references, so a unicode item name is reachable only by ID, and no dialog change makes it readable) into `dev_docs/security-hardening.md`, since that file will outlive this folder.
 
 ## Progress
 
