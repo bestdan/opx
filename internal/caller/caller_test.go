@@ -655,6 +655,33 @@ func TestSubjectSelection_AndThroughLine(t *testing.T) {
 			wantThrough: []string{"unknown"},
 		},
 		{
+			// A path containing the separator the line is joined with would
+			// otherwise read as two entries, the second looking SIP-sealed and
+			// therefore trustworthy. Quoting makes the boundary unambiguous.
+			name: "a path containing the separator cannot forge a second entry",
+			chain: []caller.ProcessForTest{
+				{Comm: "zsh", Exe: "/Users/x/Downloads › /bin/zsh"},
+				{Comm: "claude", Exe: "/usr/local/bin/claude", Argv: []string{"claude"}},
+			},
+			wantName:    "claude",
+			wantPath:    "/usr/local/bin/claude",
+			wantThrough: []string{`"/Users/x/Downloads › /bin/zsh"`},
+		},
+		{
+			// The op:// URI is rendered after this block, so an entry long
+			// enough to fill the dialog pushes the thing being approved out of
+			// view. The cut is marked, so a truncated path cannot pass as a
+			// shorter one.
+			name: "an over-long path is bounded, and the cut is visible",
+			chain: []caller.ProcessForTest{
+				{Comm: "bash", Exe: "/Users/x/" + strings.Repeat("a", 400) + "/bash"},
+				{Comm: "claude", Exe: "/usr/local/bin/claude", Argv: []string{"claude"}},
+			},
+			wantName:    "claude",
+			wantPath:    "/usr/local/bin/claude",
+			wantThrough: []string{"/Users/x/" + strings.Repeat("a", 110) + "…"},
+		},
+		{
 			// Nothing above the subject is on the line: the through line is
 			// about what stands between the subject and opx, not about the
 			// subject's own ancestry.
@@ -851,9 +878,10 @@ func TestDescribeArgv_ExeReplacesArgv0(t *testing.T) {
 // one.
 func TestParseLsofTxt(t *testing.T) {
 	cases := []struct {
-		name string
-		out  string
-		want map[int]string
+		name       string
+		out        string
+		want       map[int]string
+		wantAbsent []int
 	}{
 		{
 			name: "executable then dyld",
@@ -896,11 +924,14 @@ func TestParseLsofTxt(t *testing.T) {
 				"p60233\nftxt\nn/bin/zsh\nftxt\nn/usr/share/locale/en_US.UTF-8/LC_COLLATE\n" +
 				"p61115\nftxt\nn/Users/x/.local/share/claude/versions/2.1.220\n",
 			want: map[int]string{
-				8837:   "/Applications/Ghostty.app/Contents/MacOS/ghostty",
-				60233:  "/bin/zsh",
-				61115:  "/Users/x/.local/share/claude/versions/2.1.220",
-				999999: "",
+				8837:  "/Applications/Ghostty.app/Contents/MacOS/ghostty",
+				60233: "/bin/zsh",
+				61115: "/Users/x/.local/share/claude/versions/2.1.220",
 			},
+			// A pid with no section must be *absent*, not mapped to "" —
+			// checked by membership, since a map read cannot tell the two
+			// apart and only absence is the documented representation.
+			wantAbsent: []int{999999},
 		},
 		{
 			// A pid that yielded nothing is simply absent — this is the
@@ -930,6 +961,11 @@ func TestParseLsofTxt(t *testing.T) {
 			for pid, path := range got {
 				if _, expected := tc.want[pid]; !expected {
 					t.Errorf("parseLsofTxt returned unexpected pid %d = %q", pid, path)
+				}
+			}
+			for _, pid := range tc.wantAbsent {
+				if path, present := got[pid]; present {
+					t.Errorf("parseLsofTxt has an entry for pid %d (%q), want it absent — absence is how an unreadable process is represented", pid, path)
 				}
 			}
 		})

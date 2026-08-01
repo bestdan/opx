@@ -147,6 +147,9 @@ type Identity struct {
 	// absorbed. Every entry here is kernel-reported or explicitly unknown —
 	// nothing on this line is self-asserted, so a reader does not have to
 	// adjudicate which entries to believe.
+	//
+	// Entries are display strings, not raw paths: each is bounded and quoted so
+	// that one entry cannot read as two. See throughPaths.
 	Through []string
 }
 
@@ -232,6 +235,25 @@ func isSIPSealed(path string) bool {
 // gap is not closable by disclosure at all: an interpreted script has no kernel
 // identity to report. It needs an attestation primitive (code-signing identity
 // via csops), which needs cgo, which `make cross` forbids.
+// Entries are bounded and quoted rather than emitted raw, in that order.
+// Neither step is cosmetic:
+//
+//   - The line is assembled by joining entries with " › ", and a path may
+//     contain that separator. A shell planted in a directory the user created
+//     as `.../Downloads › /bin` yields the kernel-true path
+//     `/Users/x/Downloads › /bin/zsh`, which renders as *two* entries, the
+//     second reading as a SIP-sealed /bin/zsh. Every path shown would still be
+//     genuine; the entry count and one entry's apparent trustworthiness would
+//     not be. quoteForDisplay triggers on the space in any forged separator and
+//     escapes `\` alongside `"`, so the entry cannot forge its own closing
+//     quote either. sanitizeDisplay does not cover this — `›` is printable.
+//   - The path is attacker-influenced (a process chooses where it lives, and
+//     how deeply nested), and every other caller-controlled display string here
+//     is bounded: 120 runes for an ancestor description, maxChildCommand for
+//     the child. The op:// URI the user is actually approving is rendered
+//     *after* this block, so an unbounded line pushes the decision off the
+//     visible dialog. Truncation precedes quoting so the closing quote is never
+//     the character that gets cut.
 func throughPaths(chain []process, idx int) []string {
 	var out []string
 	for i := idx - 1; i >= 0; i-- {
@@ -241,7 +263,7 @@ func throughPaths(chain []process, idx int) []string {
 		case isSIPSealed(chain[i].exe):
 			continue
 		default:
-			out = append(out, chain[i].exe)
+			out = append(out, quoteForDisplay(truncate(chain[i].exe, 120)))
 		}
 	}
 	return out
