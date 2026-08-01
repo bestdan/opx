@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bestdan/opx/internal/caller"
 	"github.com/bestdan/opx/internal/oprunner"
 	"github.com/bestdan/opx/internal/prompt"
 )
@@ -377,6 +378,19 @@ func TestRun_ConfirmCalledWithCorrectURI(t *testing.T) {
 	}
 	if fc.lastRequest.Bindings[0].Name != "" {
 		t.Errorf("legacy mode binding name = %q, want empty", fc.lastRequest.Bindings[0].Name)
+	}
+}
+
+// TestRun_ConfirmThroughDisclosesSkippedAncestry is the single-URI half of the
+// same wiring run_subcommand_test.go checks for run mode. The through line has
+// to be set in both modes: the detail line describes the subject, and what the
+// subject's own description leaves out is exactly what this discloses.
+func TestRun_ConfirmThroughDisclosesSkippedAncestry(t *testing.T) {
+	fr := &fakeRunner{secret: []byte("val")}
+	fc := allow()
+	_ = captureStdoutCode(t, func() int { return run([]string{"op://V/I/f"}, fr, fc) })
+	if want := throughLine(caller.Current()); fc.lastRequest.CallerThrough != want {
+		t.Errorf("CallerThrough = %q, want %q", fc.lastRequest.CallerThrough, want)
 	}
 }
 

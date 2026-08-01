@@ -59,8 +59,36 @@ func IdentityForTest(comm, exe string, argv []string, aboveComms []string) Ident
 	for i, c := range aboveComms {
 		chain = append(chain, process{pid: i + 2, comm: c})
 	}
-	return identityOf(subject, chain)
+	return identityOf(subject, chain, 0)
 }
+
+// ProcessForTest describes one ancestor of opx for IdentityFromChainForTest.
+type ProcessForTest struct {
+	Comm string   // what `ps -o comm=` reports — self-asserted
+	Exe  string   // what the kernel reports; "" when unreadable
+	Argv []string // only ever consulted for the subject
+}
+
+// IdentityFromChainForTest runs the whole selection-and-rendering path over a
+// synthetic ancestor chain, ordered nearest-to-opx first. It is what Current()
+// calls once the live walk is done, so a test can assert which process the
+// dialog names — and what it discloses walking past — without a process tree.
+func IdentityFromChainForTest(specs []ProcessForTest) Identity {
+	chain := make([]process, len(specs))
+	for i, s := range specs {
+		chain[i] = process{pid: i + 1, comm: s.Comm, exe: s.Exe, argv: s.Argv}
+	}
+	return identityFromChain(chain)
+}
+
+// SkippableForTest exposes the subject-walk skip gate: uninteresting comm plus
+// kernel corroboration, rather than comm alone.
+func SkippableForTest(comm, exe string) bool {
+	return process{comm: comm, exe: exe}.skippable()
+}
+
+// IsSIPSealedForTest exposes the through-line suppression predicate.
+func IsSIPSealedForTest(path string) bool { return isSIPSealed(path) }
 
 // IdentityNameForTest exposes the header-label choice between the verified
 // executable path and the self-asserted comm.
@@ -68,7 +96,7 @@ func IdentityNameForTest(exe, comm string) string { return identityName(exe, com
 
 // ParseLsofTxtForTest exposes the lsof field-output parser, so the extraction
 // of the kernel-reported executable path is testable without a real lsof.
-func ParseLsofTxtForTest(out string) string { return parseLsofTxt(out) }
+func ParseLsofTxtForTest(out string) map[int]string { return parseLsofTxt(out) }
 
 // ParsePPIDCommForTest exposes the `ps -o ppid=,comm=` line parser so the
 // ppid/basename extraction is testable without a real ps.

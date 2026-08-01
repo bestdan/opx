@@ -491,6 +491,67 @@ func TestOriginLine(t *testing.T) {
 	}
 }
 
+// TestThroughLine covers the wording of the dialog's disclosure of what the
+// identity walk passed over. The empty case matters most: nothing worth
+// disclosing must yield no line at all, since a line that appears on every
+// ordinary read is one the user learns to skim.
+func TestThroughLine(t *testing.T) {
+	cases := []struct {
+		name string
+		id   caller.Identity
+		want string
+	}{
+		{
+			name: "nothing walked past renders no line",
+			id:   caller.Identity{Name: "claude", Path: "/usr/local/bin/claude"},
+			want: "",
+		},
+		{
+			name: "one skipped ancestor",
+			id:   caller.Identity{Name: "claude", Through: []string{"/Users/x/.cache/tools/bash"}},
+			want: "through /Users/x/.cache/tools/bash",
+		},
+		{
+			// Order is the caller package's; this only supplies the separator.
+			name: "several, nearest to opx last",
+			id:   caller.Identity{Name: "claude", Through: []string{"/Users/x/.cache/tools/bash", "unknown"}},
+			want: "through /Users/x/.cache/tools/bash › unknown",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := throughLine(tc.id); got != tc.want {
+				t.Errorf("throughLine = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRunSubcommand_ConfirmThroughDisclosesSkippedAncestry guards the wiring in
+// the mode that needs it most: in run mode the detail line describes the child,
+// so the through line is the only account of what stood between the named
+// caller and opx. The expectation is computed from the same source the
+// production path uses, so it holds wherever the test runs — including under a
+// sandbox where `ps` cannot be exec'd and the honest answer is no line.
+func TestRunSubcommand_ConfirmThroughDisclosesSkippedAncestry(t *testing.T) {
+	envPath := writeEnvFile(t, "FOO=op://V/I/f\n")
+	fr := &fakeRunner{secrets: map[string][]byte{"op://V/I/f": []byte("v")}}
+	fc := allow()
+	fs := &fakeSpawner{}
+
+	code := runWith([]string{"run", "--env-file=" + envPath, "--", "python3", "script.py"}, fr, fc, fs)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d, want %d", code, exitSuccess)
+	}
+	want := throughLine(caller.Current())
+	if fc.lastRequest.CallerThrough != want {
+		t.Errorf("CallerThrough = %q, want %q", fc.lastRequest.CallerThrough, want)
+	}
+	if fc.lastRequest.CallerThrough != "" && !strings.HasPrefix(fc.lastRequest.CallerThrough, "through ") {
+		t.Errorf("CallerThrough = %q, want it to read as a 'through <path>' line", fc.lastRequest.CallerThrough)
+	}
+}
+
 // TestRunSubcommand_ConfirmOriginNamesRequestingProcess guards the wiring the
 // origin line exists for: in run mode the detail line describes the child, so
 // without this the dialog would identify the requesting process only by a name
