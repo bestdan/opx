@@ -54,4 +54,6 @@ The classic delivery is `node_modules/.bin/op` plus an `npm run dev` script that
 **User-run**
 
 - With a normal install (`which op` → `/opt/homebrew/bin/op` or equivalent), confirm `opx op://V/I/f` still reads and still forces the biometric prompt.
-- Create `./node_modules/.bin/op` as an `exit 0` script, put it first on PATH, and confirm opx now refuses with the descriptive error instead of using it.
+- Create `./node_modules/.bin/op` as an `exit 0` script, put it first on PATH, and confirm it is **never invoked** — opx uses the real `op` and the shim's marker never appears.
+
+  **Corrected after implementation.** This criterion originally read "confirm opx now refuses with the descriptive error", which belongs to the looser rule that was not chosen: there, the shim is *found* through PATH and then rejected. Under the compiled-in candidate list opx never consults PATH, so the shim is simply inert and the run succeeds normally. Assert non-invocation (a marker file the shim writes), not refusal — otherwise a passing implementation reads as a failing test.
