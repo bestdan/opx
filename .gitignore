@@ -1,8 +1,18 @@
-# Compiled binaries
-opx
-opx-darwin-arm64
-opx-darwin-amd64
-opx-linux-amd64
+# Compiled binaries. Every one is written to the repo root — `make build`
+# produces ./opx, `make cross` produces ./opx-darwin-{arm64,amd64} — so these
+# are anchored with a leading slash and cannot swallow a nested path.
+#
+# The pattern is a glob rather than the four exact names it replaces: those
+# covered what the Makefile happens to build today, so any other binary left
+# at the root (a comparison build, a bisect artifact, an ad-hoc `go build -o`)
+# was untracked-but-not-ignored and went straight into the next `git add -A`.
+# That is not hypothetical — it put a 9.3 MB binary into #27.
+#
+# `opx-*` rather than `opx*`: the latter would also ignore a source file or
+# directory whose name starts with opx. Go source uses underscores, so
+# `opx_test.go` and `opxutil/` stay visible while `opx-prefix` does not.
+/opx
+/opx-*
 
 # Test binaries from `go test -c`
 *.test

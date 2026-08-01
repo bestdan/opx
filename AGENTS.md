@@ -417,7 +417,10 @@ codebase's reviews have actually failed; weight them accordingly.
 - Caching the `op` session — that is exactly what this tool exists to
   prevent.
 - Editing `.gitignore` to allowlist build artifacts; the repo intentionally
-  ignores all `opx*` binaries and `*.test`.
+  ignores the root-level binaries (`/opx`, `/opx-*`) and `*.test`. The
+  anchoring and the glob are both load-bearing — see the comment in the
+  file. Narrowing `/opx-*` back to a list of exact names is what let a
+  9.3 MB binary into a PR.
 
 ## Branching
 
