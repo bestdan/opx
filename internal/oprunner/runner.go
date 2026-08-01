@@ -92,10 +92,21 @@ func resolveOp() (string, error) {
 		}
 		return path, nil
 	}
+	// The remediation must not resolve the source path through PATH. An earlier
+	// draft suggested `sudo ln -s "$(command -v op)" /usr/local/bin/op`, which
+	// hands the choice of binary back to the input this whole function exists to
+	// stop trusting — and does it with sudo, at an accepted location, durably.
+	// The precondition is reachable by the adversary this models: a process
+	// running as the user can rename the real op aside to force this very error,
+	// then supply the PATH the remediation consults. Tell the user to verify the
+	// source path by hand instead.
 	return "", fmt.Errorf("no usable op binary: looked for %s. "+
-		"If op is installed elsewhere, link it into one of those locations "+
-		"(e.g. sudo ln -s \"$(command -v op)\" /usr/local/bin/op) — opx will not "+
-		"take op from PATH, since PATH is set by the process it is gating",
+		"If op is installed elsewhere, reinstall it into one of those locations "+
+		"(brew install --cask 1password-cli), or link it from a path you have "+
+		"checked by hand — e.g. sudo ln -s /full/verified/path/to/op "+
+		"/usr/local/bin/op. Do not substitute $(command -v op) for that path: "+
+		"opx will not take op from PATH, since PATH is set by the process it is "+
+		"gating",
 		strings.Join(opCandidates, ", "))
 }
 
@@ -115,10 +126,19 @@ func NewWithStderr(opStderr io.Writer) Runner {
 // runner.
 //
 // Resolving once is a correctness requirement, not an optimization: ReadSecret
-// and ForgetSession must run the *same* binary. Two lookups leave a window in
-// which the read is served by the real `op` and the signout by something else,
-// which is precisely the split that makes a shim dangerous — the user pays one
-// biometric prompt and the session is never invalidated.
+// and ForgetSession must resolve the same *path*. Two lookups re-run the
+// candidate scan, so a file appearing at an earlier candidate between them could
+// serve the signout while the real `op` served the read — one biometric prompt
+// paid, session never invalidated, which is the split that makes a shim worth
+// planting.
+//
+// It does not make them the same *binary*. Whatever sits at the resolved path
+// can be replaced between the two calls, and nothing here pins an inode; doing
+// so would mean holding an fd and exec'ing through it, which darwin does not
+// offer without new failure modes in a deliberately CGO-free program. That
+// residual is left open knowingly: it needs write access to an accepted
+// absolute location, and an attacker with that can swap the binary *before* the
+// run and win outright without racing anything.
 //
 // A resolution failure is recorded rather than returned because the constructors
 // have no error in their signature; it surfaces from both methods, so every call

@@ -38,8 +38,9 @@ command, and the environment `opx` inherits.
 - Text the caller controls — the URI, the bound variable name, the process
   name — cannot inject terminal or AppleScript control sequences to repaint
   or forge the dialog.
-- In `opx run`, the dialog names the child that will receive the secrets by
-  its full path, and shows its arguments — quoted, unshortened, and up to a
+- In `opx run`, the dialog names the child that will receive the secrets
+  exactly as you wrote it — never shortened to a bare program name — and
+  shows its arguments — quoted, unshortened, and up to a
   bounded width. Anything past that width is disclosed as a count of omitted
   arguments rather than silently dropped, so the destination cannot be
   hidden by padding the command line.
@@ -49,10 +50,12 @@ command, and the environment `opx` inherits.
 
 **Not defended, today:**
 
-- `opx` trusts your `op` install. Every binary `opx` runs — the dialog helper,
-  the two tools that identify the calling process, and `op` itself — comes from
-  a fixed absolute location rather than from `PATH`, so a process that controls
-  `PATH` cannot substitute its own. But `op` normally lives in a Homebrew
+- `opx` trusts your `op` install. Every *helper* `opx` runs — the dialog
+  helper, the two tools that identify the calling process, and `op` itself —
+  comes from a fixed absolute location rather than from `PATH`, so a process
+  that controls `PATH` cannot substitute its own. (The child command in
+  `opx run` is the one you typed, and is resolved the way your shell would
+  resolve it.) But `op` normally lives in a Homebrew
   prefix your account owns, so anything already running as you can replace the
   real binary. That is a bigger compromise than `opx` is scoped to survive, and
   it defeats every `op read` you run, not just the ones through `opx`.

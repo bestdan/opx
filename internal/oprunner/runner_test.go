@@ -279,10 +279,14 @@ func TestResolveOp_ErrorNamesTheAcceptedLocations(t *testing.T) {
 }
 
 // TestRunner_ResolvesOnceAtConstruction is a security property, not an
-// optimization. ReadSecret and ForgetSession must run the same binary: two
-// lookups leave a window where the read is served by the real op and the
-// signout by something else, which is exactly the split that makes a shim
-// dangerous — one biometric prompt paid, session never invalidated.
+// optimization. ReadSecret and ForgetSession must resolve the same path: two
+// lookups re-run the candidate scan, so a file appearing at an earlier
+// candidate between them could serve the signout while the real op served the
+// read — one biometric prompt paid, session never invalidated.
+//
+// Same path, not same binary. What sits at the path can still be swapped
+// between the calls; see resolveOp's comment for why that residual is left
+// open.
 func TestRunner_ResolvesOnceAtConstruction(t *testing.T) {
 	first := withFakeOp(t, "exit 0\n")
 	r := oprunner.NewForTest(io.Discard)
@@ -296,7 +300,7 @@ func TestRunner_ResolvesOnceAtConstruction(t *testing.T) {
 	oprunner.WithOpCandidatesForTest(t, []string{second})
 
 	if got := oprunner.ResolvedPathForTest(r); got != first {
-		t.Errorf("resolved path changed to %q after construction, want %q — read and signout must run the same binary", got, first)
+		t.Errorf("resolved path changed to %q after construction, want %q — read and signout must resolve the same path", got, first)
 	}
 }
 

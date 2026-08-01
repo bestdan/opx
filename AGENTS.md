@@ -197,22 +197,32 @@ deliberate intent.
    `internal/oprunner` (covering `op`). All accept only a
    regular, executable, non-group/world-writable file at a compiled-in
    absolute path. `caller` cannot import `prompt` — `main` composes
-   both — and the two candidate lists have no reason to move together.
+   both — and the three candidate lists have no reason to move together.
    PATH belongs to the process opx is prompting the user about, so a
    helper found there is the caller choosing what answers its own
    dialog — and a helper that exits 0 is indistinguishable from the user
    clicking Allow. The same argument covers the identity tools: they
-   decide the name the dialog attributes the read to. Every invocation
-   also runs with an explicit minimal environment
-   (`PATH=/bin:/usr/bin`, `LC_ALL=C`) rather than the inherited one. When
+   decide the name the dialog attributes the read to. Every
+   **identity-tool** invocation (`ps`, `lsof`) also runs with an explicit
+   minimal environment (`PATH=/bin:/usr/bin`, `LC_ALL=C`) rather than the
+   inherited one. `osascript` and `op` inherit opx's environment — `op`
+   necessarily, since it needs `OP_ACCOUNT` and its own config — so for
+   those two the absolute-path rule is the whole of the protection, not the
+   environment. Verified that this opens no split: with a forged `HOME`,
+   `op signout --all` exits non-zero, so `ForgetSession` fails closed, and
+   `ReadSecret` inherits the same environment and fails the same way. When
    no trusted tool resolves, `caller` degrades to `"unknown"` or to an
    omitted path line — the honest answer, and the only one available.
    `op` is resolved **once at construction** and the path reused for both
    `ReadSecret` and `ForgetSession`. That is a correctness requirement, not
-   an optimization: two lookups leave a window in which the read is served
-   by the real `op` and the signout by something else — one biometric
-   prompt paid, session never invalidated, which is the exact split that
-   makes a shim worth planting. A resolution failure is recorded on the
+   an optimization: two lookups re-run the candidate scan, so a file
+   appearing at an earlier candidate between the calls could serve the
+   signout while the real `op` served the read — one biometric prompt paid,
+   session never invalidated. What this pins is the **path, not the
+   binary**: what sits at that path can still be swapped between the two
+   calls. That residual is knowingly left open — it needs write access to
+   an accepted absolute location, and an attacker holding that wins before
+   any race. A resolution failure is recorded on the
    runner and returned by **both** methods, so in `opx run` it fails
    closed through invariant 2's path and the child is not spawned.
 
