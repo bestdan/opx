@@ -192,8 +192,9 @@ deliberate intent.
    describing a process that already ran, and a lie when describing one
    about to be handed secrets.
 9. **The caller path shown in the dialog comes from the kernel, never
-   from `ps`.** `caller.exePath` reads the text vnode via
-   `lsof -F n -d txt`; `internal/caller` must not display a path taken
+   from `ps`.** `caller.exePaths` reads the text vnode via
+   `lsof -F pfn -d txt`, for the whole ancestor chain in one call;
+   `internal/caller` must not display a path taken
    from `ps -o comm=`. This is not a stylistic preference. Despite
    printing what looks like a full path, macOS `ps` derives `comm` from
    the process's **own arguments**: a binary at `/tmp/x` that execs
@@ -205,17 +206,56 @@ deliberate intent.
    close. `ps` is still used for the ppid walk and for the basename fed
    to `isUninteresting` — both tolerate a self-asserted source; a
    displayed path does not.
-   Two limits are deliberate and should stay documented rather than
-   quietly fixed. **`isUninteresting` is still matched against the
-   `ps` basename**, so a process can still opt into being skipped by
-   naming itself `bash` and have its request attributed to a genuinely
-   trusted ancestor — the path shown is then honestly that ancestor's.
-   Closing that means resolving every ancestor's path, not just the
-   subject's. And **opx does not classify the path** as expected or
+   **Which** process gets named is a different property from **where**
+   it is shown to live, and only the second one is guaranteed. Subject
+   selection is best-effort and cannot be made otherwise: a real shell
+   is both a legitimate ancestor and a plausible attacker, so
+   `zsh evil.sh` launders attribution with no forgery anywhere and no
+   rule over executable identity can catch it. What is guaranteed
+   instead is: **the subject's path and every skipped ancestor's path
+   are kernel-true, and nothing between the subject and opx is silently
+   absorbed.** Three parts hold that up, and none is optional:
+
+   - `skippable` gates on **disagreement, not list membership**. An
+     ancestor is walked past only when `isUninteresting(comm)` *and*
+     the kernel either agrees (`basename(exe)` equals `comm`) or says
+     nothing. Reverting it to a bare list lookup reopens the pure
+     `argv[0]`-forgery case. Note the asymmetry: an unreadable path
+     skips, because `login` runs as uid 0 and returns no txt vnode, and
+     "unconfirmed ⇒ interesting" would make every bare-terminal read
+     say `"login" wants to read`.
+   - `Identity.Through` **discloses what was walked past**, at kernel
+     paths, nearest-to-opx last, with an unreadable ancestor rendered
+     as `unknown` rather than omitted — omission is the whole
+     mechanism of laundering. It is wired into **both** input modes;
+     in `opx run` the detail line is spent on the child, so this line
+     and the header are the entire account of who asked.
+   - Entries under SIP-sealed prefixes are **suppressed** from that
+     line, so the ordinary case stays quiet and the line keeps meaning
+     something when it does appear. This is not the location allowlist
+     rejected below: SIP paths are the locations an attacker cannot
+     occupy, so suppressing exactly those is a fact about the platform.
+     It does hide `zsh evil.sh`. Substituting the skipped shell's argv
+     was considered and rejected — argv is self-asserted, and putting
+     it on this line would make some entries believable and others not,
+     destroying the property that makes the line worth reading.
+
+   Additions to `uninteresting` widen what can be laundered through;
+   treat them as a security change, not a display-list tidy.
+
+   Separately, **opx does not classify the path** as expected or
    suspicious: a location allowlist fires on real callers (Claude Code
    installs under `~/.local/share`, npm under `~/.npm-global`, cargo
    under `~/.cargo/bin`), and a marker that cries wolf on the ordinary
    case trains the user to click through it.
+
+   One operational detail that is easy to "clean up" into a bug: the
+   batched `lsof` call **ignores its exit status on purpose**. Verified
+   on macOS 26.4 — lsof exits 1, silently, when any requested pid
+   yields no match, while still printing complete sections for the ones
+   it resolved. A root-owned `login` anywhere in range is enough, so
+   treating non-zero as failure discards every path in the chain in the
+   common case.
 
 If a change appears to remove or weaken any of these, call it out
 explicitly in the PR description rather than burying it in a refactor.

@@ -63,13 +63,44 @@ var uninteresting = map[string]bool{
 // fixed list, so any process can opt into being skipped simply by being named
 // `bash`. Doing so does not hide the request — it re-attributes it: the walk
 // continues past the skipped process and the dialog names whatever genuinely
-// trusted program sits above it in the chain. That is the point of showing
-// Identity.Path alongside the name; the path comes from the kernel (see
-// exePath) and is the one part of the identity the process cannot choose for
-// itself. Treat additions to `uninteresting` as widening what can be laundered
-// through, not as tidying a display list.
+// trusted program sits above it in the chain. Treat additions to
+// `uninteresting` as widening what can be laundered through, not as tidying a
+// display list.
+//
+// Membership is no longer sufficient to skip a process — see skippable, which
+// requires the kernel to corroborate the claim — and skipping is no longer
+// silent, since Identity.Through discloses what was walked past.
 func isUninteresting(comm string) bool {
 	return uninteresting[strings.ToLower(comm)]
+}
+
+// skippable reports whether p is a container process the subject walk may pass
+// over: it claims to be a shell/terminal/multiplexer *and* the kernel does not
+// contradict the claim.
+//
+// The gate is disagreement, not list membership. `comm` comes from the
+// process's own arguments (see parsePPIDComm), so membership alone lets any
+// binary opt into being skipped by calling itself `bash`. Requiring
+// basename(exe) to match closes the pure argv[0]-forgery case: a process whose
+// comm says `bash` while the kernel says /tmp/evil is not skipped, it becomes
+// the subject and is named at its real path.
+//
+// An unreadable path skips. That is deliberate and it is the weaker half:
+// `lsof` returns nothing for a process owned by another user, so a strict
+// "unconfirmed ⇒ interesting" rule would make an ordinary `zsh ← login`
+// terminal attribute reads to "login" (verified: login runs as uid 0 and
+// returns no txt vnode to a same-user caller). The cost is that a process which
+// unlinks its own binary after exec skips on the same terms. Neither branch is
+// a security control; what makes skipping safe to get wrong is that the skipped
+// process is disclosed, not hidden — see throughPaths.
+func (p process) skippable() bool {
+	if !isUninteresting(p.comm) {
+		return false
+	}
+	if p.exe == "" {
+		return true
+	}
+	return strings.EqualFold(basename(p.exe), p.comm)
 }
 
 // process is one ancestor: its pid, self-asserted executable basename, the
@@ -101,32 +132,119 @@ type Identity struct {
 	Name   string
 	Path   string
 	Detail string
+
+	// Through is the chain of processes between the named subject and opx that
+	// the subject walk passed over, at their kernel-reported paths, ordered
+	// nearest-to-opx last. An entry whose path could not be read is the literal
+	// "unknown"; entries under SIP-sealed prefixes are omitted (see
+	// throughPaths). Empty means nothing was walked past that the user needs to
+	// see — not that nothing was walked past.
+	//
+	// It exists because subject selection cannot be made trustworthy: being a
+	// real shell is compatible with being the malware, so no rule over
+	// executable identity answers "is this ancestor just a container?". What can
+	// be made true is that nothing between the subject and opx is *silently*
+	// absorbed. Every entry here is kernel-reported or explicitly unknown —
+	// nothing on this line is self-asserted, so a reader does not have to
+	// adjudicate which entries to believe.
+	Through []string
 }
 
 // Current resolves the calling process once and returns everything the dialog
-// needs to describe it. One walk per call: Name and Detail are guaranteed to
-// describe the same process, which two independent walks could not promise.
+// needs to describe it. One walk per call: Name, Detail and Through are
+// guaranteed to describe the same process and the same chain, which independent
+// walks could not promise.
 func Current() Identity {
-	chain := ancestorChain(os.Getppid(), maxWalk)
-	subject := firstInteresting(chain)
-	if subject == nil {
-		if len(chain) == 0 {
-			return Identity{Name: "unknown", Detail: "unknown"}
-		}
-		subject = &chain[0]
-	}
-	return identityOf(*subject, chain)
+	return identityFromChain(ancestorChain(os.Getppid(), maxWalk))
 }
 
-// identityOf assembles the Identity for subject, given the chain it came from.
-// Split out of Current so the whole rendering path is exercisable without a
-// live process tree — the test hook calls this, not a copy of it.
-func identityOf(subject process, chain []process) Identity {
-	return Identity{
-		Name:   identityName(subject.exe, subject.comm),
-		Path:   subject.exe,
-		Detail: describeSubject(subject, chain),
+// identityFromChain picks the subject out of chain and assembles its Identity.
+// Split out of Current so the whole selection-and-rendering path is exercisable
+// without a live process tree — the test hook calls this, not a copy of it.
+func identityFromChain(chain []process) Identity {
+	idx := subjectIdx(chain)
+	if idx < 0 {
+		return Identity{Name: "unknown", Detail: "unknown"}
 	}
+	return identityOf(chain[idx], chain, idx)
+}
+
+// identityOf assembles the Identity for the subject at chain[idx].
+func identityOf(subject process, chain []process, idx int) Identity {
+	return Identity{
+		Name:    identityName(subject.exe, subject.comm),
+		Path:    subject.exe,
+		Detail:  describeSubject(subject, chain),
+		Through: throughPaths(chain, idx),
+	}
+}
+
+// sipSealedPrefixes are the location prefixes on the SIP-sealed system volume.
+// Verified on macOS 26.4: a write to /bin, /sbin, /usr/bin, /usr/sbin,
+// /usr/libexec or /System fails with "Operation not permitted" even for root.
+// /usr/local is deliberately absent — it is merely root-owned ("Permission
+// denied"), so an attacker with root, or a Homebrew-writable prefix, can occupy
+// it.
+var sipSealedPrefixes = []string{
+	"/bin/",
+	"/sbin/",
+	"/usr/bin/",
+	"/usr/sbin/",
+	"/usr/libexec/",
+	"/System/",
+}
+
+func isSIPSealed(path string) bool {
+	for _, prefix := range sipSealedPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// throughPaths renders the ancestors between the subject at chain[idx] and opx
+// — the ones the subject walk passed over — nearest-to-opx last, so the list
+// reads in the direction control flowed towards opx.
+//
+// Two rules, and the second is a deliberate tradeoff worth stating rather than
+// discovering:
+//
+//   - An ancestor whose path could not be read renders as "unknown", never
+//     omitted. Omission is what makes laundering work; an entry the user cannot
+//     identify is still an entry they can see.
+//   - An ancestor under a SIP-sealed prefix is omitted, which keeps the common
+//     case (`opx` typed into a terminal, every skipped ancestor a stock shell)
+//     free of a line that would appear on every read and teach the user to skim
+//     past it. That is not a location allowlist of the kind opx rejects
+//     elsewhere: SIP paths are the one set of locations an attacker cannot
+//     occupy, so suppressing exactly those is a fact about the platform rather
+//     than a judgment about the user's layout.
+//
+// What suppression hides is `zsh evil.sh`: the kernel text vnode is genuinely
+// /bin/zsh, so the laundering succeeds with no forgery anywhere and no entry on
+// this line. Showing the skipped shell's argv instead (`through zsh evil.sh`)
+// was considered and rejected. argv is self-asserted, so it would put a string
+// the attacker chooses on the one line whose value is that everything on it is
+// kernel-true — `through zsh deploy.sh` reads as reassurance while naming a
+// script that need not exist. Its coverage is thin regardless (a script fed on
+// stdin, or an argv[0] forged to a single token, evades it), and the underlying
+// gap is not closable by disclosure at all: an interpreted script has no kernel
+// identity to report. It needs an attestation primitive (code-signing identity
+// via csops), which needs cgo, which `make cross` forbids.
+func throughPaths(chain []process, idx int) []string {
+	var out []string
+	for i := idx - 1; i >= 0; i-- {
+		switch {
+		case chain[i].exe == "":
+			out = append(out, "unknown")
+		case isSIPSealed(chain[i].exe):
+			continue
+		default:
+			out = append(out, chain[i].exe)
+		}
+	}
+	return out
 }
 
 // identityName picks the short header label. It prefers exe's basename over
@@ -157,7 +275,7 @@ func Name() string {
 // process's argv, optionally prefixed with a further
 // non-shell/terminal/multiplexer ancestor above it, truncated to 120
 // characters. argv[0] renders as the kernel-reported executable path (see
-// exePath — never the forgeable one `ps` prints), since distinguishing
+// exePaths — never the forgeable one `ps` prints), since distinguishing
 // /usr/local/bin/claude from ~/.cache/claude is the entire point, while the
 // remaining arguments stay path-shortened. When argv is
 // unavailable it falls back to the executable path, or to the subject's comm
@@ -347,15 +465,21 @@ func truncate(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// firstInteresting returns the first process in chain whose comm is not a
-// shell/terminal/multiplexer, or nil if none qualifies.
-func firstInteresting(chain []process) *process {
+// subjectIdx returns the index of the process the dialog names: the nearest
+// ancestor the walk will not pass over (see skippable). When every ancestor in
+// range is skippable it falls back to the immediate parent — naming the process
+// that actually invoked opx is more honest than naming nothing — and returns -1
+// only when the walk found no process at all.
+func subjectIdx(chain []process) int {
 	for i := range chain {
-		if !isUninteresting(chain[i].comm) {
-			return &chain[i]
+		if !chain[i].skippable() {
+			return i
 		}
 	}
-	return nil
+	if len(chain) > 0 {
+		return 0
+	}
+	return -1
 }
 
 // basename returns the final path component of s, or s unchanged if it
@@ -368,14 +492,15 @@ func basename(s string) string {
 }
 
 // ancestorChain walks up to n ancestors starting at pid (inclusive) via `ps`,
-// returning as much as it could determine. Only the subject entry — the first
-// interesting process, or chain[0] when none qualifies — gets its argv
-// populated; every other entry's argv stays nil, since the argv is only ever
-// used to describe the subject. The subject also gets its executable path
-// resolved from the kernel (see exePath); no other entry does, since no other
-// entry is named in the dialog. Failures degrade gracefully rather than
-// aborting the walk. Bounded to at most n+1 `ps` calls plus 1 `lsof` call: n
-// for the ppid/comm walk, 1 for the subject's argv, 1 for its path.
+// returning as much as it could determine. Every entry gets its executable path
+// resolved from the kernel (see exePaths) — the subject's because the dialog
+// names it, the rest because the subject *choice* now depends on the path (see
+// skippable) and because the ones walked past are disclosed. Only the subject
+// entry gets its argv populated; every other entry's argv stays nil, since the
+// argv is only ever used to describe the subject. Failures degrade gracefully
+// rather than aborting the walk. Bounded to at most n+1 `ps` calls plus 1
+// `lsof` call: n for the ppid/comm walk, 1 for the subject's argv, and a single
+// batched path lookup for the whole chain.
 func ancestorChain(pid, n int) []process {
 	var chain []process
 	cur := pid
@@ -387,29 +512,26 @@ func ancestorChain(pid, n int) []process {
 		chain = append(chain, process{pid: cur, comm: comm})
 		cur = ppid
 	}
-	subject := firstInterestingIdx(chain)
-	if subject < 0 {
-		if len(chain) == 0 {
-			return chain
-		}
-		subject = 0
+	if len(chain) == 0 {
+		return chain
 	}
-	if argv, ok := psArgv(chain[subject].pid); ok {
-		chain[subject].argv = argv
-	}
-	// Only the subject's path is resolved: it is the one the dialog names, and
-	// one lsof call is the whole added cost of the lookup.
-	chain[subject].exe = exePath(chain[subject].pid)
-	return chain
-}
-
-func firstInterestingIdx(chain []process) int {
+	pids := make([]int, len(chain))
 	for i := range chain {
-		if !isUninteresting(chain[i].comm) {
-			return i
+		pids[i] = chain[i].pid
+	}
+	exes := exePaths(pids)
+	for i := range chain {
+		chain[i].exe = exes[chain[i].pid]
+	}
+	// The subject is resolved here only to decide whose argv to fetch; the
+	// selection itself is redone by identityFromChain against the finished
+	// chain, so the two cannot disagree about which process is the subject.
+	if idx := subjectIdx(chain); idx >= 0 {
+		if argv, ok := psArgv(chain[idx].pid); ok {
+			chain[idx].argv = argv
 		}
 	}
-	return -1
+	return chain
 }
 
 // psCandidates and lsofCandidates are the only locations each tool is accepted
@@ -476,7 +598,7 @@ func psPPIDComm(pid int) (ppid int, comm string, ok bool) {
 // the executable basename.
 //
 // macOS `ps` prints comm as a path, but that path is derived from the
-// process's own arguments and is forgeable — see exePath, which is where the
+// process's own arguments and is forgeable — see exePaths, which is where the
 // displayed path actually comes from. What is taken from here is the ppid
 // (needed to walk) and a basename (matched against `uninteresting`, itself an
 // advisory heuristic). Both tolerate a self-asserted source; a displayed path
@@ -510,8 +632,9 @@ func parsePPIDComm(out string) (ppid int, comm string, ok bool) {
 	return ppid, basename(reported), true
 }
 
-// exePath returns the executable path the kernel has for pid, or "" when it
-// cannot be read.
+// exePaths returns the executable path the kernel has for each of pids, keyed
+// by pid. A pid whose path could not be read is absent from the map, which
+// callers read as "" — the same honest gap a single lookup would produce.
 //
 // It exists because **macOS `ps -o comm=` is not a kernel fact**. Despite
 // printing what looks like a full path, `ps` derives comm from the process's
@@ -528,63 +651,98 @@ func parsePPIDComm(out string) (ppid int, comm string, ok bool) {
 // proc_pidpath(), but that needs cgo and `make cross` must stay CGO-free.
 //
 // Failure is normal and not an error: lsof returns nothing for a process owned
-// by another user. "" then flows through to an omitted dialog line — never to
-// a guess, and never to the `ps` value this function exists to distrust.
-func exePath(pid int) string {
+// by another user. "" then flows through to an omitted dialog line or a
+// "unknown" chain entry — never to a guess, and never to the `ps` value this
+// function exists to distrust.
+//
+// The whole chain is resolved in one call. Measured on macOS 26.4: five pids in
+// 37 ms, against the 0.86 s the dialog already spends on `beep 3`, so the batch
+// is about not multiplying a cheap cost rather than about a cost that mattered.
+func exePaths(pids []int) map[int]string {
 	lsof := resolveTool(lsofCandidates)
-	if lsof == "" {
-		return ""
+	if lsof == "" || len(pids) == 0 {
+		return nil
+	}
+	list := make([]string, len(pids))
+	for i, pid := range pids {
+		list[i] = strconv.Itoa(pid)
 	}
 	// -F fn emits machine-readable field lines; -d txt -a restricts them to
 	// text-vnode entries. Apple's lsof (4.91) emits the `f` field whether or
 	// not it is requested — it delimits each file set — so `-F n` and `-F fn`
 	// are byte-identical there; `f` is named explicitly because the parser
-	// depends on it and an implicit field is a silent dependency.
-	cmd := exec.Command(lsof, "-p", strconv.Itoa(pid), "-F", "fn", "-a", "-d", "txt")
+	// depends on it and an implicit field is a silent dependency. `p` is what
+	// splits the output per process, and unlike `f` it is only emitted for a
+	// multi-pid request, so it is genuinely required here.
+	cmd := exec.Command(lsof, "-p", strings.Join(list, ","), "-F", "pfn", "-a", "-d", "txt")
 	cmd.Env = toolEnv
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
+	out, _ := cmd.Output()
+	// The exit status is deliberately ignored. Verified on macOS 26.4: lsof
+	// exits 1 — silently, with nothing on stderr — when *any* requested pid
+	// yields no matching file, while still printing complete sections for the
+	// pids it did resolve. A root-owned `login` in an ordinary terminal chain is
+	// enough to trigger it, so treating non-zero as failure would discard every
+	// path in the chain in the common case. Partial output is the normal case,
+	// not a degraded one; the parser accepts only well-formed absolute paths, so
+	// a truncated or garbled stdout yields fewer entries rather than wrong ones.
 	return parseLsofTxt(string(out))
 }
 
-// parseLsofTxt extracts the executable path from `lsof -F fn -d txt` output.
-// The format is a `p<pid>` line followed by repeating `f<fd>` / `n<name>`
-// pairs.
+// parseLsofTxt extracts each process's executable path from
+// `lsof -F pfn -d txt` output, keyed by pid. The format is a `p<pid>` line
+// introducing a section, followed by repeating `f<fd>` / `n<name>` pairs.
 //
-// The executable is the first txt entry; everything after it is some other
-// text-mapped file — dyld, shared libraries, and (observed on zsh) locale data
-// such as /usr/share/locale/en_US.UTF-8/LC_COLLATE. So the first name after
-// the first `ftxt` wins, and taking a later one would name a data file as the
-// caller.
+// The executable is the first txt entry in a section; everything after it is
+// some other text-mapped file — dyld, shared libraries, and (observed on zsh)
+// locale data such as /usr/share/locale/en_US.UTF-8/LC_COLLATE. So the first
+// name after the first `ftxt` wins per process, and taking a later one would
+// name a data file as the caller. Sections arrive in lsof's own order, not the
+// order the pids were requested in, which is why the result is a map.
 //
 // Only absolute paths are accepted: anything else means the output was not
-// what this parser expects, and a half-understood path is worse than none.
+// what this parser expects, and a half-understood path is worse than none. A
+// process whose section carries no usable name is left out of the map entirely
+// rather than mapped to "", so there is one representation of "unknown".
 //
-// Split out from exePath so the parsing is testable without a real lsof.
-func parseLsofTxt(out string) string {
-	seenTxt := false
+// Split out from exePaths so the parsing is testable without a real lsof.
+func parseLsofTxt(out string) map[int]string {
+	paths := make(map[int]string)
+	cur, seenTxt, done := 0, false, false
 	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "p") {
+			pid, err := strconv.Atoi(line[1:])
+			if err != nil {
+				// An unparseable section header means the rest of the section
+				// cannot be attributed to a pid; skip to the next header rather
+				// than folding its files into the previous process.
+				cur, seenTxt, done = 0, false, true
+				continue
+			}
+			cur, seenTxt, done = pid, false, false
+			continue
+		}
+		if done || cur == 0 {
+			continue
+		}
 		switch {
 		case line == "ftxt":
 			// A second txt record before any name means the first one carried
 			// no usable name. Falling through to this one would name a linked
-			// library as the caller, so give up instead — the whole point of
-			// this lookup is to not misattribute the request.
+			// library as the caller, so give up on this process instead — the
+			// whole point of this lookup is to not misattribute the request.
 			if seenTxt {
-				return ""
+				done = true
+				continue
 			}
 			seenTxt = true
 		case seenTxt && strings.HasPrefix(line, "n"):
-			path := line[1:]
-			if strings.HasPrefix(path, "/") {
-				return path
+			if path := line[1:]; strings.HasPrefix(path, "/") {
+				paths[cur] = path
 			}
-			return ""
+			done = true
 		}
 	}
-	return ""
+	return paths
 }
 
 func psArgv(pid int) ([]string, bool) {

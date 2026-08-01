@@ -572,6 +572,181 @@ func TestIdentity_RendersKernelPath(t *testing.T) {
 	}
 }
 
+// TestSubjectSelection_AndThroughLine is the attribution-laundering half of F6.
+// Naming the right process is not a property that can be guaranteed — a real
+// shell is both a legitimate ancestor and a plausible attacker — so two weaker
+// properties are asserted instead: a process whose self-asserted comm the kernel
+// contradicts is not walked past, and whatever *is* walked past is disclosed at
+// its kernel path rather than absorbed.
+//
+// Chains are ordered nearest-to-opx first, the way ancestorChain builds them.
+func TestSubjectSelection_AndThroughLine(t *testing.T) {
+	cases := []struct {
+		name        string
+		chain       []caller.ProcessForTest
+		wantName    string
+		wantPath    string
+		wantThrough []string
+	}{
+		{
+			// The laundering case. Calling yourself `bash` used to be enough to
+			// be skipped, handing attribution to the trusted program above.
+			name: "comm says bash, kernel says /tmp/evil — evil is the subject",
+			chain: []caller.ProcessForTest{
+				{Comm: "bash", Exe: "/tmp/evil", Argv: []string{"bash"}},
+				{Comm: "claude", Exe: "/usr/local/bin/claude"},
+			},
+			wantName: "evil",
+			wantPath: "/tmp/evil",
+		},
+		{
+			// A stock terminal chain. `login` is uid 0 and returns no txt vnode
+			// to a same-user caller, so it must keep skipping — otherwise every
+			// bare-terminal read would read `"login" wants to read`.
+			name: "stock zsh ← login still names the interesting process",
+			chain: []caller.ProcessForTest{
+				{Comm: "zsh", Exe: "/bin/zsh"},
+				{Comm: "claude", Exe: "/usr/local/bin/claude", Argv: []string{"claude"}},
+				{Comm: "zsh", Exe: "/bin/zsh"},
+				{Comm: "login", Exe: ""},
+			},
+			wantName: "claude",
+			wantPath: "/usr/local/bin/claude",
+			// The skipped /bin/zsh is SIP-sealed, so the dialog stays quiet.
+			wantThrough: nil,
+		},
+		{
+			// An honest shell somewhere an attacker can write to is skipped —
+			// its comm and kernel path agree — but it is not hidden.
+			name: "skipped shell outside SIP appears at its real path",
+			chain: []caller.ProcessForTest{
+				{Comm: "bash", Exe: "/Users/x/.cache/tools/bash"},
+				{Comm: "zsh", Exe: "/bin/zsh"},
+				{Comm: "claude", Exe: "/usr/local/bin/claude", Argv: []string{"claude"}},
+			},
+			wantName:    "claude",
+			wantPath:    "/usr/local/bin/claude",
+			wantThrough: []string{"/Users/x/.cache/tools/bash"},
+		},
+		{
+			// Ordering is nearest-to-opx last, so the line reads in the
+			// direction control flowed towards opx.
+			name: "several skipped ancestors are ordered nearest-to-opx last",
+			chain: []caller.ProcessForTest{
+				{Comm: "zsh", Exe: "/opt/homebrew/bin/zsh"},
+				{Comm: "bash", Exe: "/Users/x/.cache/tools/bash"},
+				{Comm: "claude", Exe: "/usr/local/bin/claude", Argv: []string{"claude"}},
+			},
+			wantName:    "claude",
+			wantPath:    "/usr/local/bin/claude",
+			wantThrough: []string{"/Users/x/.cache/tools/bash", "/opt/homebrew/bin/zsh"},
+		},
+		{
+			// Omission is what makes laundering work. An ancestor whose path
+			// could not be read is still an ancestor the user gets to see.
+			name: "unreadable skipped ancestor renders as unknown",
+			chain: []caller.ProcessForTest{
+				{Comm: "zsh", Exe: "/bin/zsh"},
+				{Comm: "bash", Exe: ""},
+				{Comm: "claude", Exe: "/usr/local/bin/claude", Argv: []string{"claude"}},
+			},
+			wantName:    "claude",
+			wantPath:    "/usr/local/bin/claude",
+			wantThrough: []string{"unknown"},
+		},
+		{
+			// Nothing above the subject is on the line: the through line is
+			// about what stands between the subject and opx, not about the
+			// subject's own ancestry.
+			name: "ancestors above the subject are not disclosed here",
+			chain: []caller.ProcessForTest{
+				{Comm: "claude", Exe: "/usr/local/bin/claude", Argv: []string{"claude"}},
+				{Comm: "bash", Exe: "/Users/x/.cache/tools/bash"},
+			},
+			wantName:    "claude",
+			wantPath:    "/usr/local/bin/claude",
+			wantThrough: nil,
+		},
+		{
+			// Every ancestor skippable: the walk falls back to the immediate
+			// parent, which is then the subject rather than something walked
+			// past, so there is nothing to disclose.
+			name: "all-skippable chain names the parent and discloses nothing",
+			chain: []caller.ProcessForTest{
+				{Comm: "zsh", Exe: "/bin/zsh", Argv: []string{"zsh"}},
+				{Comm: "login", Exe: ""},
+			},
+			wantName:    "zsh",
+			wantPath:    "/bin/zsh",
+			wantThrough: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := caller.IdentityFromChainForTest(tc.chain)
+			if id.Name != tc.wantName {
+				t.Errorf("Name = %q, want %q", id.Name, tc.wantName)
+			}
+			if id.Path != tc.wantPath {
+				t.Errorf("Path = %q, want %q", id.Path, tc.wantPath)
+			}
+			if len(id.Through) != len(tc.wantThrough) {
+				t.Fatalf("Through = %q, want %q", id.Through, tc.wantThrough)
+			}
+			for i, want := range tc.wantThrough {
+				if id.Through[i] != want {
+					t.Errorf("Through[%d] = %q, want %q", i, id.Through[i], want)
+				}
+			}
+		})
+	}
+}
+
+// TestSkippable_RequiresKernelCorroboration pins the gate itself: membership of
+// `uninteresting` is a claim, and a claim the kernel contradicts is not enough
+// to be walked past.
+func TestSkippable_RequiresKernelCorroboration(t *testing.T) {
+	cases := []struct {
+		comm, exe string
+		want      bool
+		why       string
+	}{
+		{"zsh", "/bin/zsh", true, "comm and kernel agree"},
+		{"zsh", "/BIN/ZSH", true, "basename comparison is case-insensitive, as the list match is"},
+		{"bash", "/tmp/evil", false, "kernel contradicts the claim"},
+		{"login", "", true, "unreadable path still skips — see skippable for why"},
+		{"claude", "", false, "not a container process in the first place"},
+		{"claude", "/bin/zsh", false, "not on the list; the kernel path does not put it there"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.why, func(t *testing.T) {
+			if got := caller.SkippableForTest(tc.comm, tc.exe); got != tc.want {
+				t.Errorf("skippable(comm=%q, exe=%q) = %v, want %v", tc.comm, tc.exe, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsSIPSealed covers the through line's suppression predicate. The set is a
+// fact about the platform, not a judgment about the user's layout: writes to
+// these prefixes fail with "Operation not permitted" even for root (verified on
+// macOS 26.4), so they are the locations an attacker cannot occupy. /usr/local
+// is merely root-owned and must not be in the set.
+func TestIsSIPSealed(t *testing.T) {
+	sealed := []string{"/bin/zsh", "/sbin/launchd", "/usr/bin/login", "/usr/sbin/lsof", "/usr/libexec/rosetta/oahd", "/System/Library/x"}
+	for _, path := range sealed {
+		if !caller.IsSIPSealedForTest(path) {
+			t.Errorf("isSIPSealed(%q) = false, want true", path)
+		}
+	}
+	unsealed := []string{"/usr/local/bin/bash", "/opt/homebrew/bin/zsh", "/Users/x/.cache/tools/bash", "/tmp/evil", "/private/tmp/bin/sh", "/binary/evil", "/usr/bin", ""}
+	for _, path := range unsealed {
+		if caller.IsSIPSealedForTest(path) {
+			t.Errorf("isSIPSealed(%q) = true, want false", path)
+		}
+	}
+}
+
 // TestIdentityName_PrefersExeOverComm is the impersonation signal. comm is
 // self-asserted; exe is where the process actually lives. When they disagree,
 // the verifiable half must win — a header reading "claude" for a binary at
@@ -666,50 +841,96 @@ func TestDescribeArgv_ExeReplacesArgv0(t *testing.T) {
 }
 
 // TestParseLsofTxt covers the parser for the one input opx actually trusts to
-// name the calling process. `lsof -F n -d txt` emits a p<pid> line then
-// repeating f/n pairs; the executable is the first txt entry and the rest are
-// linked libraries, so taking a later one would name dyld as the caller.
+// name the calling process. `lsof -F pfn -d txt` emits a p<pid> line per
+// process then repeating f/n pairs; the executable is the first txt entry in a
+// section and the rest are linked libraries, so taking a later one would name
+// dyld as the caller.
+//
+// Each case asserts the whole map, so an entry that should be absent (the
+// unreadable process) fails rather than passing unnoticed alongside a correct
+// one.
 func TestParseLsofTxt(t *testing.T) {
 	cases := []struct {
 		name string
 		out  string
-		want string
+		want map[int]string
 	}{
 		{
 			name: "executable then dyld",
 			out:  "p12943\nftxt\nn/usr/local/bin/claude\nftxt\nn/usr/lib/dyld\n",
-			want: "/usr/local/bin/claude",
+			want: map[int]string{12943: "/usr/local/bin/claude"},
 		},
 		{
 			name: "path containing spaces",
 			out:  "p1\nftxt\nn/Applications/Alfred 5.app/Contents/MacOS/Alfred\nftxt\nn/usr/lib/dyld\n",
-			want: "/Applications/Alfred 5.app/Contents/MacOS/Alfred",
+			want: map[int]string{1: "/Applications/Alfred 5.app/Contents/MacOS/Alfred"},
 		},
 		{
 			name: "no txt entry (permission denied on another user's process)",
 			out:  "p1\n",
-			want: "",
+			want: map[int]string{},
 		},
 		{
 			name: "empty output",
 			out:  "",
-			want: "",
+			want: map[int]string{},
 		},
 		{
 			name: "relative path is rejected rather than half-understood",
 			out:  "p1\nftxt\nnclaude\n",
-			want: "",
+			want: map[int]string{},
 		},
 		{
 			name: "name line before any txt marker is not the executable",
 			out:  "p1\nn/not/the/text/vnode\nftxt\nn/usr/local/bin/claude\n",
-			want: "/usr/local/bin/claude",
+			want: map[int]string{1: "/usr/local/bin/claude"},
+		},
+		{
+			// The whole point of the batch: several processes, each mapped to
+			// its own first txt entry, with sections in lsof's order rather
+			// than the order the pids were requested in. The 999999 entry
+			// pins that a pid with no section reads as "" rather than
+			// borrowing a neighbour's path.
+			name: "multiple processes each get their own path",
+			out: "p8837\nftxt\nn/Applications/Ghostty.app/Contents/MacOS/ghostty\nftxt\nn/usr/lib/dyld\n" +
+				"p60233\nftxt\nn/bin/zsh\nftxt\nn/usr/share/locale/en_US.UTF-8/LC_COLLATE\n" +
+				"p61115\nftxt\nn/Users/x/.local/share/claude/versions/2.1.220\n",
+			want: map[int]string{
+				8837:   "/Applications/Ghostty.app/Contents/MacOS/ghostty",
+				60233:  "/bin/zsh",
+				61115:  "/Users/x/.local/share/claude/versions/2.1.220",
+				999999: "",
+			},
+		},
+		{
+			// A pid that yielded nothing is simply absent — this is the
+			// ordinary case, since lsof reports nothing for a root-owned
+			// `login` and still prints the sections it could resolve.
+			name: "unreadable process is absent, its neighbours survive",
+			out:  "p1\nftxt\nn/bin/zsh\np2\np3\nftxt\nn/tmp/evil\n",
+			want: map[int]string{1: "/bin/zsh", 3: "/tmp/evil"},
+		},
+		{
+			// A section whose files cannot be attributed to a pid must not be
+			// folded into the previous process, which would name one process's
+			// executable as another's.
+			name: "unparseable section header does not leak into the previous pid",
+			out:  "p1\nftxt\nn/bin/zsh\npNaN\nftxt\nn/tmp/evil\n",
+			want: map[int]string{1: "/bin/zsh"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := caller.ParseLsofTxtForTest(tc.out); got != tc.want {
-				t.Errorf("parseLsofTxt = %q, want %q", got, tc.want)
+			got := caller.ParseLsofTxtForTest(tc.out)
+			for pid, want := range tc.want {
+				if got[pid] != want {
+					t.Errorf("parseLsofTxt[%d] = %q, want %q", pid, got[pid], want)
+				}
+			}
+			for pid, path := range got {
+				if _, expected := tc.want[pid]; !expected {
+					t.Errorf("parseLsofTxt returned unexpected pid %d = %q", pid, path)
+				}
 			}
 		})
 	}
@@ -733,8 +954,14 @@ func TestDescribeArgv_EmptyArgvWithExe(t *testing.T) {
 // would report a linked library as the caller — naming the wrong file in the
 // one dialog that authorizes the read. Giving up is the honest answer.
 func TestParseLsofTxt_NamelessFirstRecordIsNotSkipped(t *testing.T) {
-	out := "p1\nftxt\nftxt\nn/usr/lib/dyld\n"
-	if got := caller.ParseLsofTxtForTest(out); got != "" {
-		t.Errorf("parseLsofTxt = %q, want \"\" — a nameless first txt record must not fall through to a library", got)
+	// The second process is here to pin that giving up is scoped to the process
+	// with the nameless record, not to the rest of the batch.
+	out := "p1\nftxt\nftxt\nn/usr/lib/dyld\np2\nftxt\nn/bin/zsh\n"
+	got := caller.ParseLsofTxtForTest(out)
+	if got[1] != "" {
+		t.Errorf("parseLsofTxt[1] = %q, want \"\" — a nameless first txt record must not fall through to a library", got[1])
+	}
+	if got[2] != "/bin/zsh" {
+		t.Errorf("parseLsofTxt[2] = %q, want %q — one bad section must not discard the others", got[2], "/bin/zsh")
 	}
 }

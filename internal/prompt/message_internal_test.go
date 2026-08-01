@@ -469,6 +469,106 @@ func TestMessage_CallerOriginEmptyOmitsLine(t *testing.T) {
 	}
 }
 
+// TestMessage_CallerThroughSingle pins the through line in the single-URI
+// branch. It is the disclosure that keeps subject selection from being a
+// laundering target: the header names one process, and this says what stood
+// between that process and opx.
+func TestMessage_CallerThroughSingle(t *testing.T) {
+	got := message(Request{
+		Bindings:      []Binding{{URI: "op://V/I/f"}},
+		Caller:        "claude",
+		CallerOrigin:  "from /usr/local/bin/claude",
+		CallerThrough: "through /Users/x/.cache/tools/bash › unknown",
+		CallerDetail:  "via /usr/local/bin/claude --resume",
+	})
+	want := "\"claude\" wants to read:\n\n" +
+		"from /usr/local/bin/claude\n" +
+		"through /Users/x/.cache/tools/bash › unknown\n" +
+		"via /usr/local/bin/claude --resume\n\n" +
+		"op://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerThroughRunMode pins the same line in the batch branch,
+// which is the one `opx run` takes. There the detail line is spent on the child
+// about to receive the secrets, so this line and the header are the whole
+// account of who asked — the reason CallerThrough is set in both modes rather
+// than only where the ancestry is otherwise described.
+func TestMessage_CallerThroughRunMode(t *testing.T) {
+	got := message(Request{
+		Bindings:      []Binding{{Name: "AWS_KEY", URI: "op://V/I/f"}},
+		Caller:        "claude",
+		CallerOrigin:  "from /usr/local/bin/claude",
+		CallerThrough: "through /Users/x/.cache/tools/bash",
+		CallerDetail:  "to run: /usr/bin/env node ./deploy.js",
+	})
+	want := "\"claude\" wants to read 1 secret:\n\n" +
+		"from /usr/local/bin/claude\n" +
+		"through /Users/x/.cache/tools/bash\n" +
+		"to run: /usr/bin/env node ./deploy.js\n\n" +
+		"  • op://V/I/f  →  $AWS_KEY"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerThroughAloneRenders: the detail line can be suppressed as
+// duplicative and the origin line can be absent when the path is unknown. The
+// disclosure must not disappear with either of them.
+func TestMessage_CallerThroughAloneRenders(t *testing.T) {
+	got := message(Request{
+		Bindings:      []Binding{{URI: "op://V/I/f"}},
+		Caller:        "claude",
+		CallerThrough: "through /Users/x/.cache/tools/bash",
+		CallerDetail:  "via claude",
+	})
+	want := "\"claude\" wants to read:\n\n" +
+		"through /Users/x/.cache/tools/bash\n\n" +
+		"op://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerThroughEmptyOmitsLine: nothing worth disclosing renders as
+// nothing. A blank "through" line on every ordinary read is what trains a user
+// to skim past the one that matters.
+func TestMessage_CallerThroughEmptyOmitsLine(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerDetail: "via claude --resume",
+	})
+	want := "\"claude\" wants to read:\n\nvia claude --resume\n\nop://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerThroughEscapesTerminalControlCharacters: every entry on
+// this line is a path chosen by a process the user did not vet — that is the
+// whole point of showing it — so it is subject to invariant 6 like every other
+// interpolation. A CR here would repaint the dialog that authorizes the read,
+// and this line is one an attacker can cause to exist at all.
+func TestMessage_CallerThroughEscapesTerminalControlCharacters(t *testing.T) {
+	got := message(Request{
+		Bindings:      []Binding{{URI: "op://V/I/f"}},
+		Caller:        "claude",
+		CallerThrough: "through /tmp/evil\r\x1b[2Kthrough /bin/zsh",
+	})
+	if strings.ContainsAny(got, "\r\x1b") {
+		t.Errorf("message passed a raw control character through: %q", got)
+	}
+	if !strings.Contains(got, `\x0d`) || !strings.Contains(got, `\x1b`) {
+		t.Errorf("message = %q, want the control bytes rendered visibly as \\x0d and \\x1b", got)
+	}
+	if !strings.Contains(got, "/tmp/evil") {
+		t.Errorf("message = %q, want the real path still shown", got)
+	}
+}
+
 // TestMessage_CallerOriginEscapesTerminalControlCharacters: the executable
 // path is caller-controlled — a process chooses where it lives — so the origin
 // line is subject to invariant 6 like every other interpolation. A CR here

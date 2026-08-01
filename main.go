@@ -298,6 +298,18 @@ func originLine(id caller.Identity) string {
 	return "from " + id.Path
 }
 
+// throughLine words the dialog's disclosure of the ancestors the identity walk
+// passed over, or returns "" when there is nothing to disclose. The entries are
+// already ordered nearest-to-opx last and already filtered — see
+// caller.Identity.Through — so this only supplies the wording and the
+// separator, which is the same "›" the detail line uses for ancestry.
+func throughLine(id caller.Identity) string {
+	if len(id.Through) == 0 {
+		return ""
+	}
+	return "through " + strings.Join(id.Through, " › ")
+}
+
 // confirmAndRead shows the confirmation dialog covering every binding and,
 // if approved, reads each secret atomically.
 func confirmAndRead(bindings []prompt.Binding, envMode bool, r oprunner.Runner, c prompt.Confirmer) int {
@@ -309,6 +321,10 @@ func confirmAndRead(bindings []prompt.Binding, envMode bool, r oprunner.Runner, 
 		// executable path as argv[0]. Run mode is the case that needs one —
 		// there the detail line describes the child instead.
 		CallerDetail: "via " + id.Detail,
+		// The through line, by contrast, is needed in both modes: the detail
+		// line describes the subject, and what the subject's ancestry omits is
+		// exactly what this discloses.
+		CallerThrough: throughLine(id),
 	}
 	if err := c.Confirm(req); err != nil {
 		// Denial / dialog timeout / no UI all collapse to ErrDenied — that's
@@ -453,7 +469,10 @@ func runSubcommand(args []string, r oprunner.Runner, c prompt.Confirmer, sp spaw
 			// place the dialog says where the *requesting* process lives —
 			// the half of its identity it could not choose for itself.
 			CallerOrigin: originLine(id),
-			CallerDetail: "to run: " + caller.RenderCommand(argv),
+			// And with the detail line spent on the child, this line and the
+			// header are the whole account of the requesting ancestry.
+			CallerThrough: throughLine(id),
+			CallerDetail:  "to run: " + caller.RenderCommand(argv),
 		}
 		if err := c.Confirm(req); err != nil {
 			if errors.Is(err, prompt.ErrDenied) {

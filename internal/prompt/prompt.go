@@ -80,6 +80,23 @@ type Request struct {
 	// path is unknown — the line is then omitted entirely rather than rendered
 	// as a reassuring blank.
 	CallerOrigin string
+
+	// CallerThrough is an optional fully-rendered line naming the processes
+	// between the named caller and opx that the identity walk passed over (e.g.
+	// "through /Users/x/.cache/tools/bash › /bin/zsh"), shown below
+	// CallerOrigin. Like the other two, the caller words its own prefix.
+	//
+	// It is what stops the dialog's subject from being a laundering target.
+	// Which process gets named is a heuristic that cannot be made sound — a
+	// genuine shell is a legitimate ancestor and a plausible attacker — so the
+	// property opx offers instead is that nothing between the subject and opx is
+	// silently absorbed. See caller.Identity.Through for what is on it and what
+	// is deliberately suppressed.
+	//
+	// It must be set in **both** input modes. In `opx run` the detail line
+	// describes the child about to receive the secrets, so this line and the
+	// header are the only account of who asked.
+	CallerThrough string
 }
 
 // Confirmer presents the user with a confirmation dialog.
@@ -166,18 +183,22 @@ func (s *systemConfirmer) Confirm(req Request) error {
 // applies outside it: dialogTitle is the other interpolation the user sees,
 // and it sanitizes for the same reasons.
 func message(req Request) string {
-	detail := callerDetailLine(req)
-	// The origin line is caller-controlled too — a process chooses where its
-	// executable sits — so it is sanitized like every other interpolation.
-	// When present it precedes the detail line, and the two are joined into
-	// one block so a mode that has both renders them adjacent.
-	if origin := sanitizeDisplay(req.CallerOrigin); origin != "" {
-		if detail != "" {
-			detail = origin + "\n" + detail
-		} else {
-			detail = origin
+	// The origin and through lines are caller-controlled too — a process chooses
+	// where its executable sits, and chooses what it launches opx underneath —
+	// so they are sanitized like every other interpolation. Whichever are
+	// present are joined into one block, in the order origin, through, detail,
+	// so a mode that has several renders them adjacent.
+	var lines []string
+	for _, line := range []string{
+		sanitizeDisplay(req.CallerOrigin),
+		sanitizeDisplay(req.CallerThrough),
+		callerDetailLine(req),
+	} {
+		if line != "" {
+			lines = append(lines, line)
 		}
 	}
+	detail := strings.Join(lines, "\n")
 	caller := sanitizeDisplay(req.Caller)
 	if len(req.Bindings) == 1 && req.Bindings[0].Name == "" {
 		// %q stays on top of the sanitized name: it escapes the non-printable
