@@ -216,12 +216,12 @@ Behavior:
 
 ### Exit codes
 
-| Code | Meaning                                             |
-|------|-----------------------------------------------------|
-| 0    | Secret printed to stdout                            |
-| 1    | `op` failed, the read was interrupted, or not macOS |
-| 2    | Usage error (no args, malformed URI)                |
-| 3    | Denied — dialog dismissed, timed out, or no GUI    |
+| Code | Meaning                                                        |
+|------|----------------------------------------------------------------|
+| 0    | Secret printed to stdout                                       |
+| 1    | `op` failed, the read was interrupted, the dialog could not be shown, or not macOS |
+| 2    | Usage error (no args, malformed URI)                           |
+| 3    | Denied — dialog dismissed, timed out, or no GUI                |
 
 Exit 3 is the user-intent path; every other failure collapses to exit 1.
 In all non-zero cases nothing reaches stdout — read `stderr` for the reason.
@@ -234,6 +234,15 @@ In all non-zero cases nothing reaches stdout — read `stderr` for the reason.
   macOS) to show the dialog. If it can't run — a daemonized job with no
   window server, for instance — the request is denied by design. Run `opx`
   interactively.
+- **A few invisible characters in an item name are refused, not shown.**
+  Directional formatting characters (bidi overrides and marks) and the
+  Unicode line/paragraph separators can re-order or break the rest of the
+  text around them, which would let a URI misrepresent which secret it
+  names. `opx` refuses to draw a dialog containing one: it exits 1 and
+  says which code point on stderr, rather than showing you something it
+  can't vouch for. Other invisible characters — the zero-width joiner in
+  an emoji sequence, the non-breaking space macOS types on option-space —
+  are shown as an escape like `\u200d` and read normally.
 - **The prompt beeps three times, and there is no setting to stop it.** The
   dialog plays your system alert sound so an access attempt is audible when it
   opens on another Space or behind a fullscreen window; the triple is what

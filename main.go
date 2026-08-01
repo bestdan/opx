@@ -310,6 +310,20 @@ func throughLine(id caller.Identity) string {
 	return "through " + strings.Join(id.Through, " › ")
 }
 
+// confirmFailed reports a Confirm error that is not a denial. It writes to
+// os.Stderr regardless of verbosity, for the same reason usage errors do: the
+// dialog never reached anyone, so quiet mode would leave the user with a bare
+// exit 1 and no way to tell it apart from `op` failing. A denial stays on the
+// diag writer — there the user already knows, having clicked Deny.
+//
+// It prints the error, which for prompt.ErrUndisplayable names a code point
+// and nothing else. Do not widen it to echo the offending string: this is
+// stderr, and reproducing caller-controlled text there is the terminal
+// version of the problem the dialog sanitizer exists to prevent.
+func confirmFailed(err error) {
+	fmt.Fprintf(os.Stderr, "cannot show the confirmation dialog: %v\n", err)
+}
+
 // confirmAndRead shows the confirmation dialog covering every binding and,
 // if approved, reads each secret atomically.
 func confirmAndRead(bindings []prompt.Binding, envMode bool, r oprunner.Runner, c prompt.Confirmer) int {
@@ -328,14 +342,14 @@ func confirmAndRead(bindings []prompt.Binding, envMode bool, r oprunner.Runner, 
 	}
 	if err := c.Confirm(req); err != nil {
 		// Denial / dialog timeout / no UI all collapse to ErrDenied — that's
-		// the user-intent path (exit 3). Anything else is treated as a tool
-		// failure (exit 1). Today only ErrDenied flows here, but the split
-		// makes the boundary explicit if Confirm grows new error modes.
+		// the user-intent path (exit 3). Anything else is a tool failure
+		// (exit 1): the dialog could not be put in front of anyone, so there
+		// is no user decision to report.
 		if errors.Is(err, prompt.ErrDenied) {
 			diagf("denied (%v)\n", err)
 			return exitDenied
 		}
-		diagf("confirm failed: %v\n", err)
+		confirmFailed(err)
 		return exitOpFail
 	}
 	return readAndForget(bindings, envMode, r)
@@ -479,7 +493,7 @@ func runSubcommand(args []string, r oprunner.Runner, c prompt.Confirmer, sp spaw
 				diagf("denied (%v)\n", err)
 				return exitDenied
 			}
-			diagf("confirm failed: %v\n", err)
+			confirmFailed(err)
 			return exitOpFail
 		}
 	}
