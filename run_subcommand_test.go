@@ -285,6 +285,41 @@ func TestRunSubcommand_BadOPURIRejected(t *testing.T) {
 	}
 }
 
+// TestRunSubcommand_ControlLadenURIRejected extends the malformed-URI rule
+// above to control characters: an env-file value that starts with op:// but
+// carries an escape is a usage error, not a literal to pass through to the
+// child. Both halves matter — the dialog is never drawn, and the child never
+// runs, so neither the user nor the child sees anything the value's author
+// chose.
+func TestRunSubcommand_ControlLadenURIRejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"CR", "op://V/I/f\rop://decoy/I/f"},
+		{"ESC", "op://V/I/f\x1b[2K"},
+		{"invalid UTF-8", "op://V/I/f" + string([]byte{0x9b})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			envPath := writeEnvFile(t, "FOO="+tc.value+"\n")
+			fr := &fakeRunner{}
+			fc := allow()
+			fs := &fakeSpawner{}
+			code := runWith([]string{"run", "--env-file=" + envPath, "--", "echo"}, fr, fc, fs)
+			if code != exitUsage {
+				t.Errorf("exit = %d, want %d", code, exitUsage)
+			}
+			if fc.calls != 0 {
+				t.Errorf("Confirm called %d times, want 0 — validation precedes the prompt", fc.calls)
+			}
+			if fs.called != 0 {
+				t.Errorf("spawn called %d times, want 0 — a control-laden op:// value must not reach the child", fs.called)
+			}
+		})
+	}
+}
+
 func TestRunSubcommand_DialogCoversAllURIs(t *testing.T) {
 	envPath := writeEnvFile(t, "A=op://V/A/f\nB=op://V/B/f\n")
 	fr := &fakeRunner{secrets: map[string][]byte{

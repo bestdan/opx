@@ -167,6 +167,40 @@ func TestRun_InvalidURI(t *testing.T) {
 	}
 }
 
+// TestRun_ControlLadenURINeverPrompts is the point of validating before
+// confirming: a URI carrying terminal escapes is a usage error, and the dialog
+// is never drawn. Asserting the exit code alone would pass even if the prompt
+// had been shown first, so the Confirm count is the real assertion here — the
+// dialog is the trust boundary, and drawing one whose body the caller wrote is
+// the failure this rejects.
+func TestRun_ControlLadenURINeverPrompts(t *testing.T) {
+	cases := []struct {
+		name string
+		uri  string
+	}{
+		{"CR", "op://V/I/f\rop://decoy/I/f"},
+		{"ESC", "op://V/I/f\x1b[2K"},
+		{"invalid UTF-8", "op://V/I/f" + string([]byte{0x9b})},
+		{"over the length cap", "op://V/I/" + strings.Repeat("f", 1100)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeRunner{}
+			fc := allow()
+			code := captureStdoutCode(t, func() int { return run([]string{tc.uri}, fr, fc) })
+			if code != exitUsage {
+				t.Errorf("exit code = %d, want %d", code, exitUsage)
+			}
+			if fc.calls != 0 {
+				t.Errorf("Confirm called %d times, want 0 — validation must reject before any prompt is drawn", fc.calls)
+			}
+			if len(fr.readCalls) != 0 {
+				t.Errorf("ReadSecret called %d times, want 0", len(fr.readCalls))
+			}
+		})
+	}
+}
+
 func TestRun_ForgetCalledOnReadError(t *testing.T) {
 	fr := &fakeRunner{readErr: errors.New("biometric failed")}
 	code := run([]string{"op://V/I/f"}, fr, allow())

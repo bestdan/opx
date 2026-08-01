@@ -176,9 +176,14 @@ func (s *systemConfirmer) Confirm(req Request) error {
 // (a raw ESC renders as \x1b, which AppleScript rejects — the dialog never
 // appears and opx reports a denial) or survives into the rendered body (\r,
 // \n, and \t are real escapes to AppleScript, letting a caller pad or
-// line-break the text the user is approving). The URI is attacker-controlled
-// in every input mode — argv, --env, and --env-file values — since
-// uri.IsOPURI checks only the op:// prefix and three non-empty segments.
+// line-break the text the user is approving). The URI is still
+// attacker-controlled in every input mode — argv, --env, and --env-file
+// values: uri.IsOPURI now rejects control characters and invalid UTF-8, but it
+// accepts any printable text inside a segment, and it is a separate package
+// that this one does not call. Do not read that rule as making this one
+// redundant — it is the other half of the same defense, and this half is what
+// still holds if a future input path reaches the dialog without passing
+// through the validator.
 // Anything added to this function must be sanitized too — and the same
 // applies outside it: dialogTitle is the other interpolation the user sees,
 // and it sanitizes for the same reasons.

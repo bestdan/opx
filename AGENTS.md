@@ -123,6 +123,29 @@ deliberate intent.
    In `opx run`, a value that starts with `op://` but fails validation
    is rejected as a usage error rather than silently passed through as
    a literal string.
+   The rule is not purely syntactic: `IsOPURI` also rejects **control
+   characters** (any rune `< 0x20`, or in `0x7f`–`0x9f`), **invalid
+   UTF-8**, and anything over **1024 bytes**. Each has a reason that is
+   not "tidy input", and none should be relaxed as one:
+   - Control characters would otherwise reach the dialog and be shown as
+     `\x1b` escapes by `sanitizeDisplay` — safe, but leaving the user to
+     interpret gibberish in the one prompt that authorizes the read.
+     Rejecting them at the door means the prompt is never drawn.
+     The test is over **runes, not bytes**: bytes in `0x80`–`0x9f` are
+     ordinary UTF-8 continuation bytes (verified — `‘quoted’`, `日本` and
+     `—dash` all contain them), so a byte scan would reject real vault
+     names. 1Password names legitimately carry spaces, punctuation and
+     unicode.
+   - Invalid UTF-8 is rejected because ranging over a string decodes a
+     bad byte as `U+FFFD`, so a raw `0x9b` passes a rune-only test. It
+     cannot reach AppleScript — `sanitizeDisplay` ranges over runes too
+     — but the user would approve a dialog reading `�` while `op`
+     receives the original byte. **The approved text and the used text
+     must be the same string.**
+   - The length cap is the only one of the three that restricts
+     otherwise-legitimate input. A URI the dialog cannot show in full is
+     one the user cannot review, and truncation that hides the tail is
+     how a URI lies about which secret it names.
 4. **Secrets leave the process only via the chosen sink.** In single
    and `--env` modes that sink is `os.Stdout` (shell-quoted via
    `internal/shellquote` in `--env` mode). In `opx run` the sink is the
@@ -136,9 +159,13 @@ deliberate intent.
 6. **Every caller-controlled value the user sees passes through
    `sanitizeDisplay`** — dialog body *and* title. See `message` and
    `dialogTitle` in `internal/prompt`. The URI is attacker-controlled in
-   every input mode (`uri.IsOPURI` checks the `op://` prefix and three
-   non-empty segments, so any byte is legal inside a segment), and the
-   caller name is a self-asserted process name. Scope this to "every
+   every input mode: invariant 3's validator rejects control characters
+   and invalid UTF-8, but any printable text is still legal inside a
+   segment — and `internal/prompt` does not call that validator, so this
+   invariant must hold on its own. The two are halves of one defense, not
+   a rule and its backup; this half is what still holds if a future input
+   path reaches the dialog without passing through `IsOPURI`. The caller
+   name is a self-asserted process name. Scope this to "every
    place caller-controlled text reaches the user", not to one function:
    the original sweep was scoped to `message()`, and `dialogTitle` — the
    interpolation it missed — needed a follow-up fix. Unescaped, a CR or
