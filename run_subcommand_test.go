@@ -291,22 +291,37 @@ func TestRunSubcommand_BadOPURIRejected(t *testing.T) {
 // child. Both halves matter — the dialog is never drawn, and the child never
 // runs, so neither the user nor the child sees anything the value's author
 // chose.
+// Both run-mode input paths are covered: an --env-file value and an inline
+// --env pair. They converge on the same IsOPURI call, but they reach it through
+// different parsing (splitEnvPair deliberately does not validate), so the claim
+// "the child never runs" is asserted per input mode rather than once.
 func TestRunSubcommand_ControlLadenURIRejected(t *testing.T) {
 	cases := []struct {
-		name  string
-		value string
+		name   string
+		value  string
+		inline bool
 	}{
-		{"CR", "op://V/I/f\rop://decoy/I/f"},
-		{"ESC", "op://V/I/f\x1b[2K"},
-		{"invalid UTF-8", "op://V/I/f" + string([]byte{0x9b})},
+		{name: "CR in env file", value: "op://V/I/f\rop://decoy/I/f"},
+		{name: "ESC in env file", value: "op://V/I/f\x1b[2K"},
+		{name: "invalid UTF-8 in env file", value: "op://V/I/f" + string([]byte{0x9b})},
+		{name: "over the length cap in env file", value: "op://V/I/" + strings.Repeat("f", 1100)},
+		{name: "ESC in inline --env", value: "op://V/I/f\x1b[2K", inline: true},
+		{name: "invalid UTF-8 in inline --env", value: "op://V/I/f" + string([]byte{0x9b}), inline: true},
+		{name: "over the length cap in inline --env", value: "op://V/I/" + strings.Repeat("f", 1100), inline: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			envPath := writeEnvFile(t, "FOO="+tc.value+"\n")
 			fr := &fakeRunner{}
 			fc := allow()
 			fs := &fakeSpawner{}
-			code := runWith([]string{"run", "--env-file=" + envPath, "--", "echo"}, fr, fc, fs)
+			args := []string{"run"}
+			if tc.inline {
+				args = append(args, "--env=FOO="+tc.value)
+			} else {
+				args = append(args, "--env-file="+writeEnvFile(t, "FOO="+tc.value+"\n"))
+			}
+			args = append(args, "--", "echo")
+			code := runWith(args, fr, fc, fs)
 			if code != exitUsage {
 				t.Errorf("exit = %d, want %d", code, exitUsage)
 			}

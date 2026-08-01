@@ -69,19 +69,22 @@ func TestIsOPURI_RejectsControlCharacters(t *testing.T) {
 // over bytes — a byte scan would fail every case below with a non-ASCII
 // character in it.
 func TestIsOPURI_AcceptsRealVaultNames(t *testing.T) {
-	cases := []string{
-		"op://Personal/Café/pässwörd",
-		"op://Team Vault/AWS (prod)/secret_key",
-		"op://Personal/‘quoted’ item/field",
-		"op://日本/項目/フィールド",
-		"op://Personal/em—dash/field",
-		"op://Personal/item.with.dots/field-with-dashes",
-		"op://Personal/100% legit/n°1",
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"accented letters", "op://Personal/Café/pässwörd"},
+		{"spaces and parentheses", "op://Team Vault/AWS (prod)/secret_key"},
+		{"typographic quotes", "op://Personal/‘quoted’ item/field"},
+		{"CJK", "op://日本/項目/フィールド"},
+		{"em dash", "op://Personal/em—dash/field"},
+		{"dots and dashes", "op://Personal/item.with.dots/field-with-dashes"},
+		{"percent and degree signs", "op://Personal/100% legit/n°1"},
 	}
-	for _, in := range cases {
-		t.Run(in, func(t *testing.T) {
-			if !uri.IsOPURI(in) {
-				t.Errorf("IsOPURI(%q) = false, want true — real vault names carry unicode and punctuation", in)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !uri.IsOPURI(tc.input) {
+				t.Errorf("IsOPURI(%q) = false, want true — real vault names carry unicode and punctuation", tc.input)
 			}
 		})
 	}
