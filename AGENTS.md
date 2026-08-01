@@ -77,6 +77,9 @@ Go 1.24+ is required (see `go.mod`).
 - **Errors are wrapped with `%w`** so callers can use `errors.Is` /
   `errors.As`. `prompt.ErrDenied` is the canonical sentinel for user
   denial — return it (or wrap it) rather than inventing parallel errors.
+  `prompt.ErrUndisplayable` is not an exception: it names a different
+  condition — no dialog was ever drawn, so nobody denied anything — and
+  exists so that a non-denial stops being reported as one.
 - **Exit codes are centralized** in `main.go` (`exitSuccess`, `exitOpFail`,
   `exitUsage`, `exitDenied`). Reuse them; don't introduce ad-hoc integers.
 - **No `fmt.Println` to stdout** outside of writing the secret bytes —
@@ -136,6 +139,15 @@ deliberate intent.
      `—dash` all contain them), so a byte scan would reject real vault
      names. 1Password names legitimately carry spaces, punctuation and
      unicode.
+     What that does **not** mean is that such a URI resolves. `op`'s own
+     secret-reference parser accepts only a restricted ASCII set —
+     verified 2026-08-01, it rejects `é`, `日`, `—`, `‘`, an emoji, an
+     NBSP, an ASCII apostrophe and a tab — so an item with a unicode
+     name is reachable only by its (ASCII) item ID. `IsOPURI` must
+     still not encode that rule: it is `op`'s parser, `op`'s error is
+     the authoritative one, and a copy here would reject names a future
+     `op` accepts. The point of the rune-vs-byte test is that opx is
+     not the thing doing the rejecting.
    - Invalid UTF-8 is rejected because ranging over a string decodes a
      bad byte as `U+FFFD`, so a raw `0x9b` passes a rune-only test. It
      cannot reach AppleScript — `sanitizeDisplay` ranges over runes too
@@ -172,18 +184,54 @@ deliberate intent.
    ESC repaints the one dialog that authorizes the read.
 
    `sanitizeDisplay` is only half the guard, and the halves fail
-   differently on purpose. It covers C0/C1 (`< 0x20`, `0x7f`–`0x9f`),
-   rendering those visibly so the dialog still shows. Everything else
-   non-printable — bidi overrides like U+202E, other format characters —
-   is caught by the `%q` verbs on the dialog-construction path: Go
-   renders the rune as a literal `\uXXXX`, AppleScript's parser rejects
-   that, `osascript` exits non-zero, and `confirmDarwin` maps that to
-   `ErrDenied`. So the request fails closed rather than rendering a
-   reordered path. They are spread across more sites than the two
-   obvious ones: `dialogScript` wraps the assembled body and the title,
-   and `message` quotes the caller name into its header line in each of
-   its branches. Grep `%q` across `internal/prompt` rather than trusting
-   a count. **Do not "simplify" any of them into plain interpolation**
+   differently on purpose. It renders visibly — so the dialog still
+   shows — every rune whose effect is confined to itself: C0/C1
+   (`< 0x20`, `0x7f`–`0x9f`) as `\xNN`, and every other
+   `!strconv.IsPrint` rune as `\uXXXX`. The runes it deliberately leaves
+   raw are the ones whose effect is on the text *around* them, where an
+   escaped rendering and a raw one disagree about what the rest of the
+   URI says: `altersSurroundingText`, i.e. `unicode.Bidi_Control` plus
+   `Zl`/`Zp`. Those are caught by the `%q` verbs on the
+   dialog-construction path — Go renders the rune as a literal
+   `\uXXXX`, AppleScript's parser rejects that, `osascript` exits
+   non-zero — so the request fails closed rather than rendering a
+   reordered path.
+
+   That boundary sits where it does on purpose, and it moves in both
+   directions:
+
+   - **Narrowing it** — escaping bidi controls visibly too — removes
+     the fail-closed and leaves nothing but an escaper holding the one
+     dialog that authorizes the read.
+   - **Widening it** — leaving more runes raw — takes down whole
+     requests over a rune in *any* dialog string. That was the state
+     before task 11: `%q` held the entire non-printable range, so a
+     U+00A0 anywhere — a caller's directory name, an `opx run` child
+     command — failed the script and reported a denial, for a URI that
+     was ordinary ASCII. Be exact about the URI case, because the
+     obvious reading is wrong: `op`'s own secret-reference parser
+     rejects every non-ASCII rune (see invariant 3), so an item named
+     with an emoji ZWJ sequence was never readable by name anyway.
+     What this boundary governs is the rest of the dialog.
+   - **Enumerating the set** instead of asking `unicode` for it rots.
+     The list drafted for exactly this purpose omitted U+061C, U+200E
+     and U+200F.
+
+   `confirmDarwin` checks for those runes before it spends an
+   `osascript`, and returns `ErrUndisplayable` — the dialog was never
+   drawn, so there is no user to attribute a refusal to, and reporting
+   `ErrDenied` there blamed the user for a decision they never made. It
+   is a diagnostic, not a guard: if it ever disagreed with
+   `sanitizeDisplay`, `%q` is still what stops the rune reaching a
+   rendered dialog. `ErrUndisplayable` fails closed exactly like
+   `ErrDenied` — `main` reports it on stderr regardless of verbosity
+   and exits 1, which keeps exit 3 meaning "the user said no".
+
+   The `%q` verbs are spread across more sites than the two obvious
+   ones: `dialogScript` wraps the assembled body and the title, and
+   `message` quotes the caller name into its header line in each of its
+   branches. Grep `%q` across `internal/prompt` rather than trusting a
+   count. **Do not "simplify" any of them into plain interpolation**
    — they are the half that stops a URI from lying about which secret
    is being requested.
    `TestDialogScript_NonPrintableNeverReachesAppleScriptSource` guards

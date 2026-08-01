@@ -26,7 +26,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 // ErrDenied is returned by Confirm when the user explicitly denies access,
@@ -34,6 +36,15 @@ import (
 // All failure modes collapse to ErrDenied so the caller fails closed: a
 // secret-gating prompt that can't ask the user must not proceed.
 var ErrDenied = errors.New("access denied by user")
+
+// ErrUndisplayable is returned by Confirm when the request contains a rune
+// sanitizeDisplay deliberately refuses to render — see altersSurroundingText.
+// The dialog is not drawn and the read does not proceed, so it fails closed
+// exactly like ErrDenied; it is a separate sentinel only so the failure names
+// its own cause. Reporting "access denied by user" for a dialog the user was
+// never shown blames them for a refusal they did not make, and sends whoever
+// hits it looking for the wrong thing.
+var ErrUndisplayable = errors.New("request contains text that cannot be displayed safely")
 
 // Binding pairs an op:// URI with an optional shell variable name.  Name is
 // empty in single-URI mode; non-empty when invoked via --env NAME=op://...
@@ -206,12 +217,12 @@ func message(req Request) string {
 	detail := strings.Join(lines, "\n")
 	caller := sanitizeDisplay(req.Caller)
 	if len(req.Bindings) == 1 && req.Bindings[0].Name == "" {
-		// %q stays on top of the sanitized name: it escapes the non-printable
-		// runes sanitizeDisplay does not cover (bidi overrides and other format
-		// characters). It also re-escapes the backslashes sanitizeDisplay
-		// emits, which is cosmetic — a caller name carrying control characters
-		// renders as \\x1b rather than \x1b, and is not passed through either
-		// way.
+		// %q stays on top of the sanitized name: it escapes the runes
+		// sanitizeDisplay deliberately leaves raw (see altersSurroundingText),
+		// which is what makes those fail closed. It also re-escapes the
+		// backslashes sanitizeDisplay emits, which is cosmetic — a caller name
+		// carrying control characters renders as \\x1b rather than \x1b, and is
+		// not passed through either way.
 		header := fmt.Sprintf("%q wants to read:", caller)
 		if detail != "" {
 			return fmt.Sprintf("%s\n\n%s\n\n%s", header, detail, sanitizeDisplay(req.Bindings[0].URI))
@@ -289,26 +300,116 @@ func callerDetailLine(req Request) string {
 	return sanitizeDisplay(req.CallerDetail)
 }
 
-// sanitizeDisplay prevents process-controlled text from changing the
-// confirmation UI. C0 and C1 control characters are rendered as visible
-// escapes instead of being passed through to the AppleScript source that
-// confirmDarwin builds — see message and dialogTitle for what each of them
-// would otherwise break.
+// altersSurroundingText reports whether r's effect is on the text around it
+// rather than on itself: the Unicode explicit bidirectional formatting
+// characters (LRM/RLM/ALM, the embeddings and overrides, the isolates) and the
+// line and paragraph separators. These are the runes sanitizeDisplay leaves
+// raw so that dialogScript's %q escapes them, AppleScript's parser rejects the
+// escape, and the request fails closed — see the layering note on
+// sanitizeDisplay.
 //
-// Every dialog-body interpolation goes through this — caller name, caller
-// detail, URIs, and bound variable names alike. It was introduced for the
-// CallerDetail line alone, which left the URI (equally caller-controlled, and
-// the thing the user is actually being asked to approve) rendering raw.
+// The set is that principle stated exactly, not a hand-kept list: escaping a
+// rune visibly is a sufficient answer whenever the rune's damage is confined
+// to itself, and no answer at all when the rune re-orders or breaks the text
+// on either side of it — the case where an escaped rendering and a raw one
+// disagree about what the *rest* of the URI says. unicode.Bidi_Control, Zl and
+// Zp are Unicode's own names for that class, so the boundary moves with the Go
+// release rather than with anyone's memory of which code points are involved.
+// An enumerated version of this drafted for the same purpose omitted U+061C,
+// U+200E and U+200F, which is how quickly that goes wrong.
+func altersSurroundingText(r rune) bool {
+	return unicode.Is(unicode.Bidi_Control, r) ||
+		unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
+}
+
+// sanitizeDisplay prevents process-controlled text from changing the
+// confirmation UI, by rendering as visible escapes the runes that would
+// otherwise act on it. Every dialog-body interpolation goes through this —
+// caller name, caller detail, origin and through lines, URIs, and bound
+// variable names alike. It was introduced for the CallerDetail line alone,
+// which left the URI (equally caller-controlled, and the thing the user is
+// actually being asked to approve) rendering raw.
+//
+// Three classes, and the third is the one that is easy to get backwards:
+//
+//   - C0 and C1 control characters (`\x1b`, `\x0d`, …) — see message and
+//     dialogTitle for what each would otherwise break.
+//
+//   - Every other rune Go does not consider printable — U+200D, U+00A0,
+//     U+E0067, … — *except* the class below. (Named rather than shown: a raw
+//     one in this file would be invisible to whoever reads it next.) These
+//     have no effect beyond themselves, so showing an escape is a complete
+//     answer: the user sees precisely which code point is in the name, and
+//     the read proceeds with the real string. Before they were escaped here,
+//     dialogScript's %q caught them instead — which took down the whole
+//     request, and blamed the user for it.
+//
+//     Be exact about which requests that rescues, because the obvious answer
+//     is wrong. Not the URI: `op`'s own secret-reference parser accepts a
+//     restricted ASCII set and rejects every non-ASCII rune (verified
+//     2026-08-01 — `é`, `日`, `—`, an emoji, an NBSP all rejected), so a URI
+//     naming an item by such a name never resolved, opx or no opx. What is
+//     rescued is every *other* string in the dialog — the caller name, the
+//     origin path, the through line, and in `opx run` the child command —
+//     none of which op parses. An option-space in a directory name used to
+//     make opx report a denial for an ordinary ASCII URI, which is the worse
+//     bug of the two: the failure had nothing to do with the secret being
+//     read.
+//
+//   - The runes altersSurroundingText names are deliberately **not** escaped:
+//     they are left raw for %q to escape and AppleScript to reject. That is a
+//     fail-closed, not an omission, and dropping them into the class above
+//     would defeat it.
+//
+// The layering is therefore: this function renders visibly everything whose
+// damage is self-contained, and %q fails closed on the rest. The two halves
+// have swapped some ground — %q used to hold the whole non-printable range —
+// but they still fail differently on purpose, and %q remains the backstop for
+// any text that reaches dialogScript without passing through here. See
+// AGENTS.md invariant 6.
 func sanitizeDisplay(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+		switch {
+		case r < 0x20 || (r >= 0x7f && r <= 0x9f):
 			fmt.Fprintf(&b, `\x%02x`, r)
-			continue
+		case altersSurroundingText(r):
+			b.WriteRune(r)
+		case !strconv.IsPrint(r):
+			// Go's own escape spelling, so the dialog shows what a reader would
+			// paste into a Go or Python literal to reproduce the rune.
+			if r > 0xffff {
+				fmt.Fprintf(&b, `\U%08x`, r)
+			} else {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			}
+		default:
+			b.WriteRune(r)
 		}
-		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// undisplayableRune returns the first rune in ss that sanitizeDisplay left raw
+// for the AppleScript parser to reject, so confirmDarwin can name the cause
+// instead of reporting a denial the user never made.
+//
+// It is scanned over the *assembled* body and title — what dialogScript is
+// about to %q — rather than over Request's fields, so a field added later is
+// covered without this having to be revisited.
+//
+// It is a diagnostic, not a guard. If it ever disagreed with sanitizeDisplay,
+// what would still stop the rune reaching the rendered dialog is %q, exactly
+// as before; this only decides which error the user is told about.
+func undisplayableRune(ss ...string) (rune, bool) {
+	for _, s := range ss {
+		for _, r := range s {
+			if altersSurroundingText(r) {
+				return r, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // dialogScript builds the AppleScript source confirmDarwin runs.  Split out
@@ -377,7 +478,18 @@ func dialogScript(req Request, iconClause string) string {
 //
 // An unresolvable osascript is a denial. ErrDenied already covers "no UI
 // available to ask", and there is no other backend to fall back to.
+//
+// A request carrying a rune sanitizeDisplay refuses to render is the one
+// failure that is not a denial: nothing is shown, so there is no user to
+// attribute the refusal to. It fails closed all the same — see
+// ErrUndisplayable.
 func confirmDarwin(req Request, stderr io.Writer) error {
+	// Before osascript, not instead of it: %q would reject these too, but
+	// as an unattributable non-zero exit. Checking here is what lets the
+	// error name the code point instead.
+	if r, bad := undisplayableRune(message(req), dialogTitle(req)); bad {
+		return fmt.Errorf("%w: U+%04X", ErrUndisplayable, r)
+	}
 	osascript := resolveHelper(osascriptCandidates)
 	if osascript == "" {
 		return ErrDenied

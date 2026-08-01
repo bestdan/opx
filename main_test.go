@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -281,6 +282,41 @@ func mainCatchAll(fr *fakeRunner, fn func(r oprunner.Runner) int) (code int, for
 	code = fn(fo)
 	forgetErr = fo.ForgetSession()
 	return code, forgetErr
+}
+
+// TestRun_UndisplayableRequestIsNotReportedAsDenial pins the exit-code half of
+// the fix. prompt.ErrUndisplayable means the dialog was never drawn, so there
+// was no user to deny anything: exit 1 (the tool could not do its job), not
+// exit 3 (the user said no). It still fails closed — nothing is read.
+//
+// Both modes are covered because the two Confirm call sites make this decision
+// separately; the earlier reading of them as one is how #19's gap survived.
+func TestRun_UndisplayableRequestIsNotReportedAsDenial(t *testing.T) {
+	undisplayable := &fakeConfirmer{err: fmt.Errorf("%w: U+202E", prompt.ErrUndisplayable)}
+
+	t.Run("single", func(t *testing.T) {
+		fr := &fakeRunner{}
+		code := run([]string{"op://V/I/f"}, fr, undisplayable)
+		if code != exitOpFail {
+			t.Errorf("exit code = %d, want %d (exitDenied would blame the user for a "+
+				"dialog that was never shown)", code, exitOpFail)
+		}
+		if len(fr.readCalls) != 0 {
+			t.Errorf("read ran %d times despite an unshown dialog, want 0", len(fr.readCalls))
+		}
+	})
+
+	t.Run("run mode", func(t *testing.T) {
+		fr := &fakeRunner{}
+		fs := &fakeSpawner{}
+		code := runWith([]string{"run", "--env", "A=op://V/A/f", "--", "true"}, fr, undisplayable, fs)
+		if code != exitOpFail {
+			t.Errorf("exit code = %d, want %d", code, exitOpFail)
+		}
+		if fs.called != 0 {
+			t.Errorf("child spawned %d times despite an unshown dialog, want 0", fs.called)
+		}
+	})
 }
 
 func TestMainCatchAll_DeniedSingle_ForgetsOnce(t *testing.T) {

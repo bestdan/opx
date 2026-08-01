@@ -1,6 +1,8 @@
 package prompt
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -183,13 +185,20 @@ func TestDialogTitle_BenignUnchanged(t *testing.T) {
 // TestDialogScript_NonPrintableNeverReachesAppleScriptSource pins the second
 // half of the escaping guard, which sanitizeDisplay does not provide.
 //
-// sanitizeDisplay covers C0/C1 only. A Unicode bidi override (U+202E) is
-// neither, so it reaches dialogScript intact — and a raw U+202E inside the
-// AppleScript string literal would render, reordering the displayed path so a
-// URI can lie about which secret is being requested. What stops it is the %q
-// dialogScript wraps the body and title in: Go escapes any non-printable rune
-// to a literal \uXXXX, AppleScript's parser rejects that token, osascript
-// exits non-zero, and confirmDarwin maps that to ErrDenied. Fails closed.
+// sanitizeDisplay escapes C0/C1 and every other non-printable rune whose
+// effect is confined to itself. A Unicode bidi override (U+202E) is neither:
+// it is left raw on purpose, so it reaches dialogScript intact — and a raw
+// U+202E inside the AppleScript string literal would render, reordering the
+// displayed path so a URI can lie about which secret is being requested. What
+// stops it is the %q dialogScript wraps the body and title in: Go escapes any
+// non-printable rune to a literal \uXXXX, and AppleScript's parser rejects that
+// token, so the script cannot run. Fails closed.
+//
+// confirmDarwin now catches the same runes before it spends an osascript at
+// all, and returns ErrUndisplayable rather than a denial — see
+// TestConfirmDarwin_UndisplayableRuneIsNotADenial. That is a diagnostic, not a
+// replacement: this %q is what holds if text ever reaches dialogScript without
+// passing that check.
 //
 // The assertion is on the generated source, not on osascript's behaviour, so
 // this stays a hermetic unit test (AGENTS.md forbids shelling out to a real
@@ -211,6 +220,137 @@ func TestDialogScript_NonPrintableNeverReachesAppleScriptSource(t *testing.T) {
 	if !strings.Contains(got, "\\u202e") {
 		t.Errorf("expected the override to survive as an escaped \\u202e token "+
 			"(which AppleScript rejects, so the request fails closed): %q", got)
+	}
+}
+
+// TestMessage_SelfContainedNonPrintablesRenderVisibly covers the item names
+// this whole class of rune actually shows up in: U+200D joins an emoji
+// sequence, U+00A0 is what macOS types on option-space, and the U+E0000 tag
+// characters build a flag emoji. None of them re-orders or breaks the text
+// around it, so an escape is a complete description and the read proceeds.
+//
+// Before they were escaped here, dialogScript's %q turned each into a literal
+// \uXXXX, AppleScript rejected the script, and opx reported "access denied by
+// user" for a dialog nobody was ever shown — i.e. an ordinary 1Password item
+// was simply unreadable through opx, and the failure named the wrong cause.
+func TestMessage_SelfContainedNonPrintablesRenderVisibly(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		uri  string
+		want string
+	}{
+		{"emoji ZWJ", "op://Private/\U0001f468\u200d\U0001f4bb Work/token", `\u200d`},
+		{"option-space NBSP", "op://Private/My\u00a0Item/token", `\u00a0`},
+		{"emoji tag character", "op://Private/\U0001f3f4\U000e0067 Team/token", `\U000e0067`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := message(Request{Bindings: []Binding{{URI: tc.uri}}, Caller: "claude"})
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("expected the rune to render as a visible %s escape: %q", tc.want, got)
+			}
+			if r, bad := undisplayableRune(got); bad {
+				t.Errorf("U+%04X must not make the request undisplayable — it has no "+
+					"effect on the text around it, so escaping it is a complete answer", r)
+			}
+		})
+	}
+}
+
+// TestConfirmDarwin_UndisplayableRuneIsNotADenial pins the other half: the
+// runes that do re-order or break their surroundings still fail closed, and
+// the failure no longer arrives as ErrDenied.
+//
+// confirmDarwin returns before it resolves or execs osascript, so this stays
+// hermetic — nothing here shells out.
+func TestConfirmDarwin_UndisplayableRuneIsNotADenial(t *testing.T) {
+	// Written as Go escapes, not literal characters: a raw one in this file
+	// would re-order or break the source for whoever reads it next.
+	for _, tc := range []struct {
+		name string
+		bad  string
+	}{
+		{"RLO override", "\u202e"},
+		{"line separator", "\u2028"},
+		{"paragraph separator", "\u2029"},
+		{"RLM mark", "\u200f"},
+		{"first strong isolate", "\u2068"},
+		{"Arabic letter mark", "\u061c"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := confirmDarwin(Request{
+				Bindings: []Binding{{URI: "op://Private/prod/root" + tc.bad + "gnip"}},
+				Caller:   "claude",
+			}, io.Discard)
+
+			if !errors.Is(err, ErrUndisplayable) {
+				t.Fatalf("confirmDarwin err = %v, want ErrUndisplayable", err)
+			}
+			if errors.Is(err, ErrDenied) {
+				t.Errorf("must not report a denial for a dialog the user never saw: %v", err)
+			}
+			if err == nil {
+				t.Error("must fail closed")
+			}
+		})
+	}
+}
+
+// TestConfirmDarwin_UndisplayableRuneCaughtInEveryField pins the same property
+// for the fields that are not URIs — and it earns its place because the caller
+// name reaches the check by a route that is easy to break.
+//
+// message() puts the caller through its header's %q, which escapes the rune
+// before undisplayableRune ever sees the body. What catches it is dialogTitle,
+// which interpolates with %s. So "an undisplayable rune anywhere in the request
+// is reported as one" currently rests on dialogTitle *not* quoting — and adding
+// a %q there, a plausible reading of invariant 6, would silently send this case
+// back to reporting a denial. This test is what fails if that happens.
+func TestConfirmDarwin_UndisplayableRuneCaughtInEveryField(t *testing.T) {
+	const rlo = "\u202e"
+	for _, tc := range []struct {
+		name string
+		req  Request
+	}{
+		{"caller", Request{Caller: "claude" + rlo + "hs.yolped"}},
+		{"caller detail", Request{Caller: "claude", CallerDetail: "to run: /bin/sh" + rlo + "gnip"}},
+		{"caller origin", Request{Caller: "claude", CallerOrigin: "from /tmp/x" + rlo + "gnip"}},
+		{"caller through", Request{Caller: "claude", CallerThrough: "through /bin/zsh" + rlo}},
+		{"binding name", Request{Caller: "claude", Bindings: []Binding{
+			{Name: "A" + rlo + "B", URI: "op://V/I/f"}, {Name: "C", URI: "op://V/I/g"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := tc.req
+			if req.Bindings == nil {
+				req.Bindings = []Binding{{URI: "op://V/I/f"}}
+			}
+			if err := confirmDarwin(req, io.Discard); !errors.Is(err, ErrUndisplayable) {
+				t.Errorf("confirmDarwin err = %v, want ErrUndisplayable", err)
+			}
+		})
+	}
+}
+
+// TestConfirmDarwin_UndisplayableErrorNamesTheCodePointOnly guards the one
+// place this error is allowed to describe caller-controlled text. It names the
+// code point; it must not echo the string, because the error reaches stderr
+// and reproducing the rune there is the terminal version of the problem the
+// sanitizer exists to prevent.
+func TestConfirmDarwin_UndisplayableErrorNamesTheCodePointOnly(t *testing.T) {
+	err := confirmDarwin(Request{
+		Bindings: []Binding{{URI: "op://Private/prod/root\u202egnip"}},
+		Caller:   "claude",
+	}, io.Discard)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), "U+202E") {
+		t.Errorf("error must name the offending code point: %v", err)
+	}
+	if strings.ContainsRune(err.Error(), '\u202e') {
+		t.Errorf("error must not carry the raw rune to stderr: %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "gnip") {
+		t.Errorf("error must not echo caller-controlled text: %q", err.Error())
 	}
 }
 
