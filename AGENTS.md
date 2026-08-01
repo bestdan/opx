@@ -190,10 +190,11 @@ deliberate intent.
    it; if that test is in your way, you are removing the guard, not the
    noise.
 7. **Security-critical helpers are resolved from compiled-in absolute
-   paths, never PATH.** Two screeners do this, deliberately duplicated
+   paths, never PATH.** Three screeners do this, deliberately duplicated
    rather than shared: `resolveHelper` in `internal/prompt` (covering
-   `osascript` and the `defaults` appearance query) and `resolveTool` in
-   `internal/caller` (covering `ps` and `lsof`). Both accept only a
+   `osascript` and the `defaults` appearance query), `resolveTool` in
+   `internal/caller` (covering `ps` and `lsof`), and `resolveOp` in
+   `internal/oprunner` (covering `op`). All accept only a
    regular, executable, non-group/world-writable file at a compiled-in
    absolute path. `caller` cannot import `prompt` — `main` composes
    both — and the two candidate lists have no reason to move together.
@@ -206,9 +207,36 @@ deliberate intent.
    (`PATH=/bin:/usr/bin`, `LC_ALL=C`) rather than the inherited one. When
    no trusted tool resolves, `caller` degrades to `"unknown"` or to an
    omitted path line — the honest answer, and the only one available.
-   **`op` (`internal/oprunner`) is still resolved by bare name and is not
-   yet covered**; closing that is outstanding work, not a documented
-   exemption.
+   `op` is resolved **once at construction** and the path reused for both
+   `ReadSecret` and `ForgetSession`. That is a correctness requirement, not
+   an optimization: two lookups leave a window in which the read is served
+   by the real `op` and the signout by something else — one biometric
+   prompt paid, session never invalidated, which is the exact split that
+   makes a shim worth planting. A resolution failure is recorded on the
+   runner and returned by **both** methods, so in `opx run` it fails
+   closed through invariant 2's path and the child is not spawned.
+
+   **`resolveOp` does not inherit the other two screeners' safety
+   argument, and must not be documented as if it did.** `resolveHelper`
+   and `resolveTool` are safe partly because their real candidates live on
+   the SIP-sealed system volume, where no account can write. `op`'s usual
+   home is a Homebrew prefix owned by the invoking user (`/opt/homebrew/bin`
+   is `drwxrwxr-x`), so anything running as the user can replace it. What
+   `resolveOp` buys is narrower and is the whole of the finding: **the
+   caller's PATH no longer chooses** the binary. Injecting a PATH entry —
+   or dropping `node_modules/.bin/op`, which npm puts first on PATH for
+   every script it runs — is ephemeral, targeted, and invisible.
+   Overwriting the machine's real `op` is persistent, global, and already
+   total victory independent of opx.
+
+   The candidate list must stay **absolute and free of anything derived
+   from the environment**. `~/.local/bin/op` is a real install location and
+   was deliberately left out: there is no `~` at runtime, it comes from
+   `$HOME`, and `$HOME` is set by the same caller that sets `PATH` — a
+   HOME-derived candidate is a PATH allowlist wearing another variable's
+   name. The list is matched **before** symlink resolution, because
+   `/opt/homebrew/bin/op` is a symlink into a versioned Caskroom path, and
+   canonicalizing it would break the rule on every `op` upgrade.
 8. **`caller.RenderCommand`'s output is an authorization statement, not
    a summary.** In `opx run` it is the only disclosure of which process
    receives the plaintext secrets, so it keeps full paths and full

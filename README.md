@@ -49,14 +49,13 @@ command, and the environment `opx` inherits.
 
 **Not defended, today:**
 
-- `op` is still located via `PATH`. A process that controls `PATH` can supply
-  its own, letting the `op signout` that ends the session silently do nothing.
-  It is a known gap with a fix in progress. Until it lands, the guarantee that
-  the session is invalidated holds only against a caller that cannot influence
-  the `PATH` `opx` inherits — and a process that launches `opx` sets that
-  `PATH` itself, so in practice assume it does not hold against a hostile
-  caller. (`ps` and `lsof`, which identify the calling process, are no longer
-  in this bullet: they are located at fixed absolute paths.)
+- `opx` trusts your `op` install. Every binary `opx` runs — the dialog helper,
+  the two tools that identify the calling process, and `op` itself — comes from
+  a fixed absolute location rather than from `PATH`, so a process that controls
+  `PATH` cannot substitute its own. But `op` normally lives in a Homebrew
+  prefix your account owns, so anything already running as you can replace the
+  real binary. That is a bigger compromise than `opx` is scoped to survive, and
+  it defeats every `op read` you run, not just the ones through `opx`.
 - An attacker who can already write to a directory like `/usr/local/bin`, or
   edit your shell profile, is outside what `opx` can reach. It hardens a
   specific, cheap, ambient vector; it is not a defense against a fully
