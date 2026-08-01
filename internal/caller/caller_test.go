@@ -134,7 +134,7 @@ func TestDescribeArgv_SingleTokenNoPrefix(t *testing.T) {
 	// A single-token argv (no arguments) has nothing to describe beyond the
 	// name the dialog header already shows, so no ancestor prefix should be
 	// added even when an interesting ancestor is present above it.
-	got := caller.DescribeArgvForTest([]string{"claude"}, []string{"ghostty", "login-wrapper"})
+	got := caller.DescribeArgvForTest("", []string{"claude"}, []string{"ghostty", "login-wrapper"})
 	if got != "claude" {
 		t.Errorf("DescribeArgvForTest with single-token argv = %q, want %q (no ancestor prefix)", got, "claude")
 	}
@@ -142,6 +142,7 @@ func TestDescribeArgv_SingleTokenNoPrefix(t *testing.T) {
 
 func TestDescribeArgv_MultiTokenGetsPrefix(t *testing.T) {
 	got := caller.DescribeArgvForTest(
+		"",
 		[]string{"/usr/bin/python3", "/home/user/linear-archive.py", "--team", "PreThink"},
 		[]string{"ghostty", "claude"},
 	)
@@ -153,6 +154,7 @@ func TestDescribeArgv_MultiTokenGetsPrefix(t *testing.T) {
 
 func TestDescribeArgv_SkipsUninterestingAncestors(t *testing.T) {
 	got := caller.DescribeArgvForTest(
+		"",
 		[]string{"node", "--flag"},
 		[]string{"ghostty", "tmux", "bash"},
 	)
@@ -370,7 +372,7 @@ func writeFakePS(t *testing.T, dir, name string, perm os.FileMode) string {
 // TestPSPath_Rejects covers every way a candidate fails to qualify. ps is the
 // only source of caller identity, so a ps another account could have written
 // gets to name whichever program the dialog attributes the read to.
-func TestPSPath_Rejects(t *testing.T) {
+func TestResolveTool_Rejects(t *testing.T) {
 	dir := t.TempDir()
 
 	subdir := filepath.Join(dir, "adir")
@@ -390,8 +392,8 @@ func TestPSPath_Rejects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := caller.PSPathForTest([]string{tc.candidate}); got != "" {
-				t.Errorf("psPath accepted %s candidate: %q", tc.name, got)
+			if got := caller.ResolveToolForTest([]string{tc.candidate}); got != "" {
+				t.Errorf("resolveTool accepted %s candidate: %q", tc.name, got)
 			}
 		})
 	}
@@ -399,28 +401,28 @@ func TestPSPath_Rejects(t *testing.T) {
 
 // TestPSPath_AcceptsCleanExecutable is the positive case: a regular 0755 file
 // is what the packaged /bin/ps looks like.
-func TestPSPath_AcceptsCleanExecutable(t *testing.T) {
+func TestResolveTool_AcceptsCleanExecutable(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFakePS(t, dir, "ps", 0o755)
 
-	if got := caller.PSPathForTest([]string{path}); got != path {
-		t.Errorf("psPath() = %q, want %q", got, path)
+	if got := caller.ResolveToolForTest([]string{path}); got != path {
+		t.Errorf("resolveTool() = %q, want %q", got, path)
 	}
 }
 
 // TestPSPath_FirstMatchWins pins the preference order: candidates are tried in
 // list order, and an unusable earlier entry is skipped rather than aborting.
-func TestPSPath_FirstMatchWins(t *testing.T) {
+func TestResolveTool_FirstMatchWins(t *testing.T) {
 	dir := t.TempDir()
 	bad := writeFakePS(t, dir, "bad", 0o666)
 	first := writeFakePS(t, dir, "first", 0o755)
 	second := writeFakePS(t, dir, "second", 0o755)
 
-	if got := caller.PSPathForTest([]string{first, second}); got != first {
-		t.Errorf("psPath() = %q, want first candidate %q", got, first)
+	if got := caller.ResolveToolForTest([]string{first, second}); got != first {
+		t.Errorf("resolveTool() = %q, want first candidate %q", got, first)
 	}
-	if got := caller.PSPathForTest([]string{bad, second}); got != second {
-		t.Errorf("psPath() skipped past unusable candidate to %q, want %q", got, second)
+	if got := caller.ResolveToolForTest([]string{bad, second}); got != second {
+		t.Errorf("resolveTool() skipped past unusable candidate to %q, want %q", got, second)
 	}
 }
 
@@ -428,26 +430,30 @@ func TestPSPath_FirstMatchWins(t *testing.T) {
 // only through PATH must never be selected. PATH is set by the process opx is
 // prompting the user about, so a "ps" found there is the caller choosing the
 // name the dialog attributes the secret request to.
-func TestPSPath_IgnoresPATH(t *testing.T) {
+func TestResolveTool_IgnoresPATH(t *testing.T) {
 	dir := t.TempDir()
 	writeFakePS(t, dir, "ps", 0o755)
 	t.Setenv("PATH", dir)
 
-	if got := caller.PSPathForTest([]string{"/nonexistent/ps"}); got != "" {
-		t.Errorf("psPath consulted PATH and returned %q, want \"\"", got)
+	if got := caller.ResolveToolForTest([]string{"/nonexistent/ps"}); got != "" {
+		t.Errorf("resolveTool consulted PATH and returned %q, want \"\"", got)
 	}
 }
 
-// TestPSCandidates_AreAbsolute guards the compiled-in list: a bare name would
-// reintroduce PATH resolution at the exec.Command call.
-func TestPSCandidates_AreAbsolute(t *testing.T) {
-	candidates := caller.PSCandidatesForTest()
-	if len(candidates) == 0 {
-		t.Fatal("ps candidate list is empty")
-	}
-	for _, c := range candidates {
-		if !filepath.IsAbs(c) {
-			t.Errorf("candidate %q is not absolute", c)
+// TestToolCandidates_AreAbsolute guards the compiled-in lists: a bare name
+// would reintroduce PATH resolution at the exec.Command call.
+func TestToolCandidates_AreAbsolute(t *testing.T) {
+	for name, candidates := range map[string][]string{
+		"ps":   caller.PSCandidatesForTest(),
+		"lsof": caller.LsofCandidatesForTest(),
+	} {
+		if len(candidates) == 0 {
+			t.Errorf("%s candidate list is empty", name)
+		}
+		for _, c := range candidates {
+			if !filepath.IsAbs(c) {
+				t.Errorf("%s candidate %q is not absolute", name, c)
+			}
 		}
 	}
 }
@@ -455,15 +461,15 @@ func TestPSCandidates_AreAbsolute(t *testing.T) {
 // TestPSEnv_IsMinimal pins the replacement environment. The point is that it
 // replaces the inherited one rather than extending it, so the caller cannot
 // steer ps through the environment either.
-func TestPSEnv_IsMinimal(t *testing.T) {
+func TestToolEnv_IsMinimal(t *testing.T) {
 	want := []string{"PATH=/bin:/usr/bin", "LC_ALL=C"}
-	got := caller.PSEnvForTest()
+	got := caller.ToolEnvForTest()
 	if len(got) != len(want) {
-		t.Fatalf("psEnv = %q, want exactly %q", got, want)
+		t.Fatalf("toolEnv = %q, want exactly %q", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("psEnv[%d] = %q, want %q", i, got[i], want[i])
+			t.Errorf("toolEnv[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
 }
@@ -480,5 +486,231 @@ func TestName_UnknownWhenNoPS(t *testing.T) {
 	}
 	if got := caller.Describe(); got != "unknown" {
 		t.Errorf("Describe() = %q with no resolvable ps, want %q", got, "unknown")
+	}
+}
+
+// TestIdentity_RendersKernelPath is the core of F6: the dialog must show where
+// the calling executable actually lives, because that is the one part of its
+// identity the process could not choose for itself. Each case asserts what the
+// identity *renders as* — an implementation that dropped the name or the path
+// would fail rather than pass by absence.
+//
+// No case expects a "suspicious location" marker: opx does not classify paths.
+// See the Identity doc comment for why a location allowlist would fire on
+// legitimate callers (real Claude Code lives under ~/.local/share).
+func TestIdentity_RendersKernelPath(t *testing.T) {
+	cases := []struct {
+		name       string
+		comm       string
+		exe        string
+		argv       []string
+		wantName   string
+		wantDetail string
+	}{
+		{
+			name:       "conventional location",
+			comm:       "claude",
+			exe:        "/usr/local/bin/claude",
+			argv:       []string{"claude", "--resume"},
+			wantName:   "claude",
+			wantDetail: "/usr/local/bin/claude --resume",
+		},
+		{
+			name:       "cache directory is shown, not flagged",
+			comm:       "claude",
+			exe:        "/Users/x/.cache/claude",
+			argv:       []string{"claude", "--resume"},
+			wantName:   "claude",
+			wantDetail: "/Users/x/.cache/claude --resume",
+		},
+		{
+			name:       "app bundle path with a space survives intact",
+			comm:       "Alfred",
+			exe:        "/Applications/Alfred 5.app/Contents/MacOS/Alfred",
+			argv:       []string{"/Applications/Alfred 5.app/Contents/MacOS/Alfred"},
+			wantName:   "Alfred",
+			wantDetail: "/Applications/Alfred 5.app/Contents/MacOS/Alfred",
+		},
+		{
+			name:       "unknown path degrades to the comm-only rendering",
+			comm:       "claude",
+			exe:        "",
+			argv:       []string{"claude", "--resume"},
+			wantName:   "claude",
+			wantDetail: "claude --resume",
+		},
+		{
+			name:       "unknown path and no argv still names the caller",
+			comm:       "claude",
+			exe:        "",
+			argv:       nil,
+			wantName:   "claude",
+			wantDetail: "claude",
+		},
+		{
+			name:       "path without argv still renders the path",
+			comm:       "claude",
+			exe:        "/Users/x/.cache/claude",
+			argv:       nil,
+			wantName:   "claude",
+			wantDetail: "/Users/x/.cache/claude",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := caller.IdentityForTest(tc.comm, tc.exe, tc.argv, nil)
+			if id.Name != tc.wantName {
+				t.Errorf("Name = %q, want %q", id.Name, tc.wantName)
+			}
+			if id.Path != tc.exe {
+				t.Errorf("Path = %q, want %q", id.Path, tc.exe)
+			}
+			if id.Detail != tc.wantDetail {
+				t.Errorf("Detail = %q, want %q", id.Detail, tc.wantDetail)
+			}
+		})
+	}
+}
+
+// TestIdentityName_PrefersExeOverComm is the impersonation signal. comm is
+// self-asserted; exe is where the process actually lives. When they disagree,
+// the verifiable half must win — a header reading "claude" for a binary at
+// /tmp/evil is the exact lie F6 describes.
+func TestIdentityName_PrefersExeOverComm(t *testing.T) {
+	if got := caller.IdentityNameForTest("/tmp/evil/notclaude", "claude"); got != "notclaude" {
+		t.Errorf("identityName(exe=/tmp/evil/notclaude, comm=claude) = %q, want %q", got, "notclaude")
+	}
+	if got := caller.IdentityNameForTest("", "claude"); got != "claude" {
+		t.Errorf("identityName with no exe = %q, want the comm fallback %q", got, "claude")
+	}
+}
+
+// TestParsePPIDComm covers the ps line parser. What it yields is the ppid and
+// a basename — never the displayed path, which comes from the kernel via lsof
+// (see exePath); macOS `ps -o comm=` echoes the process's own argv[0]. The
+// space case is why the remainder is taken verbatim rather than re-joined from
+// whitespace fields: a real app bundle has a space in its path, and a
+// Fields/Join round trip would corrupt the basename taken from it.
+func TestParsePPIDComm(t *testing.T) {
+	cases := []struct {
+		name     string
+		out      string
+		wantPPID int
+		wantComm string
+		wantOK   bool
+	}{
+		{
+			name:     "plain path",
+			out:      " 8149 /bin/zsh\n",
+			wantPPID: 8149,
+			wantComm: "zsh",
+			wantOK:   true,
+		},
+		{
+			name:     "path containing spaces is preserved exactly",
+			out:      "    1 /Applications/Alfred 5.app/Contents/MacOS/Alfred\n",
+			wantPPID: 1,
+			wantComm: "Alfred",
+			wantOK:   true,
+		},
+		{
+			name:     "consecutive spaces are not collapsed",
+			out:      "  42 /Users/x/two  spaces/app\n",
+			wantPPID: 42,
+			wantComm: "app",
+			wantOK:   true,
+		},
+		{
+			name:     "only the first line is used",
+			out:      " 7 /bin/zsh\n 9 /bin/bash\n",
+			wantPPID: 7,
+			wantComm: "zsh",
+			wantOK:   true,
+		},
+		{name: "empty output", out: "", wantOK: false},
+		{name: "ppid only", out: "  42\n", wantOK: false},
+		{name: "non-numeric ppid", out: "abc /bin/zsh\n", wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ppid, comm, ok := caller.ParsePPIDCommForTest(tc.out)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if ppid != tc.wantPPID {
+				t.Errorf("ppid = %d, want %d", ppid, tc.wantPPID)
+			}
+			if comm != tc.wantComm {
+				t.Errorf("comm = %q, want %q", comm, tc.wantComm)
+			}
+		})
+	}
+}
+
+// TestDescribeArgv_ExeReplacesArgv0 pins that a verified path displaces the
+// self-asserted argv[0] while the remaining arguments stay path-shortened,
+// and that the ancestor prefix still applies.
+func TestDescribeArgv_ExeReplacesArgv0(t *testing.T) {
+	got := caller.DescribeArgvForTest(
+		"/Users/x/.cache/claude",
+		[]string{"claude", "/home/user/linear-archive.py", "--team", "PreThink"},
+		[]string{"ghostty", "node"},
+	)
+	want := "node › /Users/x/.cache/claude linear-archive.py --team PreThink"
+	if got != want {
+		t.Errorf("DescribeArgvForTest = %q, want %q", got, want)
+	}
+}
+
+// TestParseLsofTxt covers the parser for the one input opx actually trusts to
+// name the calling process. `lsof -F n -d txt` emits a p<pid> line then
+// repeating f/n pairs; the executable is the first txt entry and the rest are
+// linked libraries, so taking a later one would name dyld as the caller.
+func TestParseLsofTxt(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want string
+	}{
+		{
+			name: "executable then dyld",
+			out:  "p12943\nftxt\nn/usr/local/bin/claude\nftxt\nn/usr/lib/dyld\n",
+			want: "/usr/local/bin/claude",
+		},
+		{
+			name: "path containing spaces",
+			out:  "p1\nftxt\nn/Applications/Alfred 5.app/Contents/MacOS/Alfred\nftxt\nn/usr/lib/dyld\n",
+			want: "/Applications/Alfred 5.app/Contents/MacOS/Alfred",
+		},
+		{
+			name: "no txt entry (permission denied on another user's process)",
+			out:  "p1\n",
+			want: "",
+		},
+		{
+			name: "empty output",
+			out:  "",
+			want: "",
+		},
+		{
+			name: "relative path is rejected rather than half-understood",
+			out:  "p1\nftxt\nnclaude\n",
+			want: "",
+		},
+		{
+			name: "name line before any txt marker is not the executable",
+			out:  "p1\nn/not/the/text/vnode\nftxt\nn/usr/local/bin/claude\n",
+			want: "/usr/local/bin/claude",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := caller.ParseLsofTxtForTest(tc.out); got != tc.want {
+				t.Errorf("parseLsofTxt = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

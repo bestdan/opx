@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bestdan/opx/internal/caller"
+
 	"github.com/bestdan/opx/internal/spawn"
 )
 
@@ -451,5 +453,65 @@ func TestRunSubcommand_ForgetFailure_NoSpawn(t *testing.T) {
 	}
 	if fr.forgetCalled != 1 {
 		t.Errorf("ForgetSession called %d times, want 1", fr.forgetCalled)
+	}
+}
+
+// TestOriginLine covers the wording of the dialog's origin line against
+// synthetic identities, since a live process tree cannot produce an anomalous
+// path on demand. The empty case matters most: an unknown path must yield no
+// line at all, rather than a "from " that implies a location was verified.
+func TestOriginLine(t *testing.T) {
+	cases := []struct {
+		name string
+		id   caller.Identity
+		want string
+	}{
+		{
+			name: "conventional path",
+			id:   caller.Identity{Name: "claude", Path: "/usr/local/bin/claude"},
+			want: "from /usr/local/bin/claude",
+		},
+		{
+			name: "unconventional path is disclosed, not judged",
+			id:   caller.Identity{Name: "claude", Path: "/Users/x/.cache/claude"},
+			want: "from /Users/x/.cache/claude",
+		},
+		{
+			name: "unknown path renders no line",
+			id:   caller.Identity{Name: "unknown"},
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := originLine(tc.id); got != tc.want {
+				t.Errorf("originLine = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRunSubcommand_ConfirmOriginNamesRequestingProcess guards the wiring the
+// origin line exists for: in run mode the detail line describes the child, so
+// without this the dialog would identify the requesting process only by a name
+// it chose for itself. The expectation is computed from the same source the
+// production path uses, so it holds wherever the test runs — including where
+// `ps` is unavailable and the honest answer is no line.
+func TestRunSubcommand_ConfirmOriginNamesRequestingProcess(t *testing.T) {
+	envPath := writeEnvFile(t, "FOO=op://V/I/f\n")
+	fr := &fakeRunner{secrets: map[string][]byte{"op://V/I/f": []byte("v")}}
+	fc := allow()
+	fs := &fakeSpawner{}
+
+	code := runWith([]string{"run", "--env-file=" + envPath, "--", "python3", "script.py"}, fr, fc, fs)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d, want %d", code, exitSuccess)
+	}
+	want := originLine(caller.Current())
+	if fc.lastRequest.CallerOrigin != want {
+		t.Errorf("CallerOrigin = %q, want %q", fc.lastRequest.CallerOrigin, want)
+	}
+	if fc.lastRequest.CallerOrigin != "" && !strings.HasPrefix(fc.lastRequest.CallerOrigin, "from ") {
+		t.Errorf("CallerOrigin = %q, want it to read as a 'from <path>' line", fc.lastRequest.CallerOrigin)
 	}
 }

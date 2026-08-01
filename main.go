@@ -287,13 +287,28 @@ func parseEnvPair(pair string) (prompt.Binding, error) {
 	return prompt.Binding{Name: name, URI: val}, nil
 }
 
+// originLine words the dialog's origin line for id, or returns "" when the
+// executable path is unknown so the line is omitted rather than shown empty.
+// An omitted line is the honest rendering of "the kernel would not tell us";
+// wording it as an unknown location would imply a check that did not happen.
+func originLine(id caller.Identity) string {
+	if id.Path == "" {
+		return ""
+	}
+	return "from " + id.Path
+}
+
 // confirmAndRead shows the confirmation dialog covering every binding and,
 // if approved, reads each secret atomically.
 func confirmAndRead(bindings []prompt.Binding, envMode bool, r oprunner.Runner, c prompt.Confirmer) int {
+	id := caller.Current()
 	req := prompt.Request{
-		Bindings:     bindings,
-		Caller:       caller.Name(),
-		CallerDetail: "via " + caller.Describe(),
+		Bindings: bindings,
+		Caller:   id.Name,
+		// No separate origin line here: the detail line already renders the
+		// executable path as argv[0]. Run mode is the case that needs one —
+		// there the detail line describes the child instead.
+		CallerDetail: "via " + id.Detail,
 	}
 	if err := c.Confirm(req); err != nil {
 		// Denial / dialog timeout / no UI all collapse to ErrDenied — that's
@@ -430,9 +445,14 @@ func runSubcommand(args []string, r oprunner.Runner, c prompt.Confirmer, sp spaw
 	// dotenv loader. ForgetSession is still called so any leftover session
 	// from a prior `op` invocation is cleared.
 	if len(bindings) > 0 {
+		id := caller.Current()
 		req := prompt.Request{
-			Bindings:     bindings,
-			Caller:       caller.Name(),
+			Bindings: bindings,
+			Caller:   id.Name,
+			// The detail line below describes the child, so this is the only
+			// place the dialog says where the *requesting* process lives —
+			// the half of its identity it could not choose for itself.
+			CallerOrigin: originLine(id),
 			CallerDetail: "to run: " + caller.RenderCommand(argv),
 		}
 		if err := c.Confirm(req); err != nil {
