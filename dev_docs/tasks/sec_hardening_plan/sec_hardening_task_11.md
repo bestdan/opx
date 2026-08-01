@@ -68,3 +68,99 @@ A third option is to split the difference: render the *safe* non-printables visi
 ## Note
 
 Frequency is low but not hypothetical: option-space is a single keystroke slip on macOS, and emoji in item names are ordinary. Priority is low because nothing is *unsafe* here — the failure is closed, just mislabelled and unhelpful.
+
+## Outcome — merged as #27 (pending)
+
+**Direction taken: the third — split the difference — but not with the
+hand-maintained list the option was written around.**
+
+The three candidates differ only in what happens to which runes, so it is
+worth stating the two questions separately. *Does the read succeed?* and
+*what does the dialog show?* For every non-printable rune except one class,
+those have the same answer under options 2 and 3: escape it visibly, let the
+read proceed. The class where they differ is the runes whose effect is on the
+text *around* them — bidi controls, and the line/paragraph separators — where
+an escaped rendering and a raw one disagree about what the rest of the URI
+says. That is the whole of the disagreement, and it is where the boundary
+belongs.
+
+Why not the other two:
+
+- **Option 1 (reject `!IsPrint` in `IsOPURI`)** relabels the failure without
+  removing it — `👨‍💻 Work` is still unreadable — and it is incomplete on its
+  own terms: the same `%q` catches the caller name, the origin line and the
+  through line, none of which any URI validator sees. Invariant 3 is
+  untouched by what shipped.
+- **Option 2 (escape everything non-printable)** fixes the usability half and
+  gives up the fail-closed on bidi overrides, on the argument that escaping is
+  enough. In this repo that argument has a track record: four corrections on
+  this plan, all in escaping and quoting, every one a property its author
+  believed held.
+
+**The task file's objection to option 3 does not survive contact with the
+standard library.** "A hand-maintained list that rots" is right about lists
+and wrong about this set: `unicode.Bidi_Control` ∪ `Zl` ∪ `Zp` is Unicode's
+own name for the class, maintained by the Go release. The objection is also
+self-demonstrating — the list sketched in this file for exactly this purpose
+omitted U+061C, U+200E and U+200F, three of the twelve.
+
+**Invariant 6 moves, and AGENTS.md says so in the same change.** The layers
+still fail differently on purpose; what changed is where the line sits — `%q`
+used to hold the whole non-printable range. Both directions are now written
+down, because both are real: narrowing it removes the fail-closed, widening it
+makes ordinary items unreadable.
+
+**The misleading denial is fixed at its own layer, not as a side effect.**
+`confirmDarwin` catches the fail-closed runes before it spends an `osascript`
+and returns a new `ErrUndisplayable` naming the code point; `main` reports it
+on stderr regardless of verbosity and exits 1, leaving exit 3 to mean the user
+said no. The check is a diagnostic — `%q` is still the guard — and the code
+says so, because a reader who mistakes it for the guard will "simplify" the
+`%q` away.
+
+### What the acceptance criteria got right, and the one thing they didn't
+
+The third code-enforced criterion — "display-integrity runes still fail
+closed, whichever direction is taken" — matches what shipped, and would have
+been wrong for option 2, which was still live when it was written. Worth
+noticing rather than trusting: a criterion written before the design is
+settled can only match some of the designs it is meant to judge.
+
+The user-run criterion (an item named with an option-space, read through
+`opx`) needs a real vault and is left to the reviewer.
+
+### What was measured rather than reasoned
+
+- `strconv.IsPrint` is false for U+00A0, U+200D, U+2028, U+2029 and the tag
+  characters, and true for plain emoji — the discriminator the task file
+  identified, confirmed on this toolchain.
+- `unicode.Bidi_Control` on Go's Unicode 15.0.0 tables is exactly the twelve
+  explicit formatting characters: U+061C, U+200E, U+200F, U+202A–U+202E,
+  U+2066–U+2069.
+- End-to-end against a real `osacompile`, on the source `dialogScript`
+  actually builds: ZWJ, NBSP, tag characters, C0 escapes and plain text all
+  compile; U+202E and U+2028 still do not.
+- **An unstated premise that nearly cost an afternoon:** under the Bash
+  sandbox `osacompile` cannot load StandardAdditions, so *every* script fails
+  to compile — including a bare `beep 3`. The first end-to-end run reported
+  the escaping broken for all seven cases, plain ASCII included. The tell was
+  that the control case failed too.
+
+### Co-review (#27)
+
+Three external reviewers. One returned no findings. The other two each raised
+one substantive claim, and both were empirically false:
+
+- That `strconv.IsPrint(U+00A0)` is true, so the NBSP case could not work.
+  It is false; Go's `IsPrint` admits only ASCII space from `Zs`.
+- That an undisplayable rune in `Caller` escapes the check, because
+  `message`'s header `%q`s the caller. Half-right premise: it does — but
+  `dialogTitle` interpolates with `%s`, so the raw rune survives there and is
+  caught. Verified by running `confirmDarwin`.
+
+The second claim was wrong and useful anyway. The property holds through a
+route nobody would guess from reading `confirmDarwin`, and nothing pinned it —
+so a later change adding `%q` to `dialogTitle`, which invariant 6's own
+emphasis invites, would have sent that case quietly back to reporting a
+denial. `TestConfirmDarwin_UndisplayableRuneCaughtInEveryField` now covers
+every caller-controlled field, and says why.

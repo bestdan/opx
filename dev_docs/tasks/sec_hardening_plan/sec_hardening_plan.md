@@ -69,9 +69,9 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 9. [[sec_hardening_task_9]] — Graduate the durable decisions to `dev_docs/security-hardening.md` and delete this plan folder.
 10. ~~[[sec_hardening_task_10]] — Disclose the skipped ancestor chain instead of trusting the skip heuristic~~ — **merged, #24**. F6 fully closed. The obvious fix (matching `uninteresting` against the kernel basename) was rejected as unsound before implementation; step 4's open decision was settled as **suppress SIP-sealed entries, do not substitute argv**, for the reasons in the task file's Outcome section.
 
-11. [[sec_hardening_task_11]] — A non-printable rune in a legitimate item name (emoji ZWJ, option-space NBSP) makes `opx` unusable and reports it as a denial. Pre-existing, found while building task 2; not one of the ten scan findings.
+11. ~~[[sec_hardening_task_11]] — A non-printable rune in a legitimate item name (emoji ZWJ, option-space NBSP) makes `opx` unusable and reports it as a denial~~ — **PR #27, open**. Pre-existing, found while building task 2; not one of the ten scan findings. Took the third of the three candidate directions, but replaced its hand-maintained list with `unicode.Bidi_Control` ∪ `Zl` ∪ `Zp` — the objection to that option was that a list rots, and the list sketched in the task file had already dropped three of the twelve. Invariant 6's boundary moves; `AGENTS.md` says so in the same change.
 
-Remaining order: **11** (independent of everything else, and the only remaining item that is a user-visible bug rather than a hardening). Task 9 closes the plan out — and must carry task 7's correction, task 10's outcome, and task 2's rune-vs-byte reasoning into `dev_docs/security-hardening.md`, since that file will outlive this folder.
+Remaining order: **9 only** — task 11 is in review as #27. Task 9 closes the plan out — and must carry task 7's correction, task 10's outcome, and task 2's rune-vs-byte reasoning into `dev_docs/security-hardening.md`, since that file will outlive this folder.
 
 ## Progress
 
@@ -85,8 +85,8 @@ Remaining order: **11** (independent of everything else, and the only remaining 
 | ✅ | 6 — faithful run-mode child rendering | F7, F9, F10 | merged #16, + #19 |
 | ✅ | 7 — identity from exe path, not `comm` | F6 | merged #23 — impersonation closed |
 | ✅ | 8 — invariants + residual risk in docs | (none) | merged #20, + #21 |
-| ⬜ | 9 — graduate to `dev_docs/`, delete plan | (none) | **last** |
-| ⬜ | 11 — non-printable rune reads as a denial | (none — found in task 2) | **next** |
+| ⬜ | 9 — graduate to `dev_docs/`, delete plan | (none) | **next / last** |
+| 🔄 | 11 — non-printable rune reads as a denial | (none — found in task 2) | PR #27, open |
 | ✅ | 10 — disclose the skipped ancestor chain | F6 (laundering half) | merged #24 (`20195dc`) |
 
 **All 10 findings closed** — F1, F2, F3, F4, F5, F6, F7, F8, F9, F10.
@@ -123,3 +123,13 @@ Not covered by any task: the **2 candidate sites the scan's verification panel l
    **Task 10 adds the sharper corollary: check the claims the file *didn't* make.** Every assertion in task 10's file had been run before it was written, and all of them held. What nearly shipped a bug was an unstated premise inherited from #23 — that `lsof` returning non-zero means the lookup failed. It exits **1, silently, when any one requested pid yields no match**, while still printing the sections it resolved, so a root-owned `login` in range would have blanked the entire chain through the retained `if err != nil { return "" }`. None of the acceptance criteria would have caught it: they all feed the parser directly, never the subprocess. When a change widens what a command is asked for (one pid → many), re-run the command's *failure* modes, not just its success path.
 
    **Task 4 adds a corollary about the checking itself.** Its "identity is unchanged" claim was checked with `go test`, which replayed a **cached** result from an earlier sandboxed run and reported `Name() == "unknown"` — a fabricated regression that a second, uncached run disproved. The Bash sandbox also cannot exec the setuid `/bin/ps` at all, so *any* sandboxed run of `internal/caller` exercises the degradation path rather than the real one. For task 5, and for anything else touching `internal/caller`: verify behaviour with `go test -count=1`, unsandboxed, or the evidence is about the harness rather than the change.
+
+   **Task 11 generalizes that corollary past `internal/caller`.** Its
+   end-to-end check compiled the AppleScript `dialogScript` actually builds
+   and reported *every* case broken — plain ASCII included. Under the Bash
+   sandbox `osacompile` cannot load StandardAdditions, so a bare `beep 3`
+   fails to compile too. What caught it was the control case failing, which
+   is the general lesson: **a verification harness needs a case that is
+   expected to pass**, or a harness-level failure is indistinguishable from
+   the finding you were looking for. Task 4's cached-result phantom and this
+   one are the same bug in the evidence, twice.
