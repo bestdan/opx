@@ -69,7 +69,7 @@ A third option is to split the difference: render the *safe* non-printables visi
 
 Frequency is low but not hypothetical: option-space is a single keystroke slip on macOS, and emoji in item names are ordinary. Priority is low because nothing is *unsafe* here — the failure is closed, just mislabelled and unhelpful.
 
-## Outcome — merged as #27 (pending)
+## Outcome — merged as #27 (`a180594`)
 
 **Direction taken: the third — split the difference — but not with the
 hand-maintained list the option was written around.**

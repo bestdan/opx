@@ -69,9 +69,9 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 9. [[sec_hardening_task_9]] — Graduate the durable decisions to `dev_docs/security-hardening.md` and delete this plan folder.
 10. ~~[[sec_hardening_task_10]] — Disclose the skipped ancestor chain instead of trusting the skip heuristic~~ — **merged, #24**. F6 fully closed. The obvious fix (matching `uninteresting` against the kernel basename) was rejected as unsound before implementation; step 4's open decision was settled as **suppress SIP-sealed entries, do not substitute argv**, for the reasons in the task file's Outcome section.
 
-11. ~~[[sec_hardening_task_11]] — A non-printable rune in a legitimate item name (emoji ZWJ, option-space NBSP) makes `opx` unusable and reports it as a denial~~ — **PR #27, open**. Pre-existing, found while building task 2; not one of the ten scan findings. Took the third of the three candidate directions, but replaced its hand-maintained list with `unicode.Bidi_Control` ∪ `Zl` ∪ `Zp` — the objection to that option was that a list rots, and the list sketched in the task file had already dropped three of the twelve. Invariant 6's boundary moves; `AGENTS.md` says so in the same change.
+11. ~~[[sec_hardening_task_11]] — A non-printable rune in a legitimate item name (emoji ZWJ, option-space NBSP) makes `opx` unusable and reports it as a denial~~ — **merged, #27** (`a180594`). Pre-existing, found while building task 2; not one of the ten scan findings. Took the third of the three candidate directions, but replaced its hand-maintained list with `unicode.Bidi_Control` ∪ `Zl` ∪ `Zp` — the objection to that option was that a list rots, and the list sketched in the task file had already dropped three of the twelve. Invariant 6's boundary moves; `AGENTS.md` says so in the same change.
 
-Remaining order: **9 only** — task 11 is in review as #27. Task 9 closes the plan out — and must carry task 7's correction, task 10's outcome, task 2's rune-vs-byte reasoning **and task 11's correction to it** (`op` rejects non-ASCII in secret references, so a unicode item name is reachable only by ID, and no dialog change makes it readable) into `dev_docs/security-hardening.md`, since that file will outlive this folder.
+Remaining order: **9 only** — every other task has merged. Task 9 closes the plan out — and must carry task 7's correction, task 10's outcome, task 2's rune-vs-byte reasoning **and task 11's correction to it** (`op` rejects non-ASCII in secret references, so a unicode item name is reachable only by ID, and no dialog change makes it readable) into `dev_docs/security-hardening.md`, since that file will outlive this folder.
 
 ## Progress
 
@@ -86,7 +86,7 @@ Remaining order: **9 only** — task 11 is in review as #27. Task 9 closes the p
 | ✅ | 7 — identity from exe path, not `comm` | F6 | merged #23 — impersonation closed |
 | ✅ | 8 — invariants + residual risk in docs | (none) | merged #20, + #21 |
 | ⬜ | 9 — graduate to `dev_docs/`, delete plan | (none) | **next / last** |
-| 🔄 | 11 — non-printable rune reads as a denial | (none — found in task 2) | PR #27, open |
+| ✅ | 11 — non-printable rune reads as a denial | (none — found in task 2) | merged #27 (`a180594`) |
 | ✅ | 10 — disclose the skipped ancestor chain | F6 (laundering half) | merged #24 (`20195dc`) |
 
 **All 10 findings closed** — F1, F2, F3, F4, F5, F6, F7, F8, F9, F10.
