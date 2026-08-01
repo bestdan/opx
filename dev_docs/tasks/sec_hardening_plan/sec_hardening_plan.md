@@ -20,7 +20,7 @@ The ten findings collapse into four groups, which is how the tasks are sliced:
 | A | Dialog interpolates caller-controlled text without sanitization — `sanitizeCallerDetail` from `a58bd99` was never applied to `Binding.URI` / `Binding.Name` | F2, F4, F8 | [[sec_hardening_task_1]], [[sec_hardening_task_2]] | task 1 **merged** (#15); task 2 open |
 | B | Security-critical helper binaries (`osascript`, `ps`, `op`) resolved by bare name through caller-controlled PATH | **F1 (HIGH)**, F3, F5 | [[sec_hardening_task_3]], [[sec_hardening_task_4]], [[sec_hardening_task_5]] | tasks 3 (#14) and 4 (#22) **merged**; task 5 open |
 | C | Run-mode dialog understates the child that receives the secrets — `renderArgv` basenames path-like tokens, `RenderCommand` cuts at 120 runes | F7, F9, F10 | [[sec_hardening_task_6]] | **merged** (#16, + #19) |
-| D | Caller identity is the self-asserted `comm` string; the verifiable executable path is fetched and then discarded | F6 | [[sec_hardening_task_7]] | open |
+| D | Caller identity is the self-asserted `comm` string; the verifiable executable path is fetched and then discarded | F6 | [[sec_hardening_task_7]] | **merged** (#23) — impersonation closed, attribution laundering still open |
 
 Group B contained the only HIGH: a planted `zenity` that exits `0` **was** the approval, and its presence also suppressed the `/dev/tty` fallback, so no prompt appeared at all.
 
@@ -64,27 +64,27 @@ The tradeoff accepted throughout: an attacker who already executes code as the u
 4. ~~[[sec_hardening_task_4]] — Invoke `ps` by absolute path with a minimal environment~~ — **merged, #22**.
 5. [[sec_hardening_task_5]] — Resolve `op` once, reject untrusted locations, fail closed (F5).
 6. ~~[[sec_hardening_task_6]] — Render the run-mode child command faithfully~~ — **merged, #16** (+ #19).
-7. [[sec_hardening_task_7]] — Base caller identity on the executable path, not the self-asserted `comm` (F6).
+7. ~~[[sec_hardening_task_7]] — Base caller identity on the executable path, not the self-asserted `comm`~~ — **merged, #23**, but its premise was wrong and the task file carries the correction: macOS `ps -o comm=` is forgeable, so the path comes from `lsof`. F6 is half closed.
 8. ~~[[sec_hardening_task_8]] — Record the merged invariants and the residual risk~~ — **merged, #20** (+ #21, which added the `%q` layer to invariant 6 and a test pinning it).
 9. [[sec_hardening_task_9]] — Graduate the durable decisions to `dev_docs/security-hardening.md` and delete this plan folder.
 
-Remaining order: **7** (unblocked now that 4 has landed — both rewrite `psPPIDComm`; still needs open question 3 answered), then **2**, then **5** once its open question is answered. Task 9 closes the plan out.
+Remaining order: **2**, then **5** once its open question is answered. Task 9 closes the plan out — and must carry task 7's correction into `dev_docs/security-hardening.md`, since that file will outlive this folder.
 
 ## Progress
 
 | | Task | Finding(s) | State |
 |---|---|---|---|
 | ✅ | 1 — sanitize every dialog interpolation | F2, F4, F8 | merged #15, + `0bb2506` |
-| ⬜ | 2 — reject control bytes in `uri.IsOPURI` | (defense in depth) | open |
+| ⬜ | 2 — reject control bytes in `uri.IsOPURI` | (defense in depth) | **next** |
 | ✅ | 3 — resolve dialog helpers from absolute paths | **F1 (HIGH)** | merged #14 |
 | ✅ | 4 — `ps` by absolute path, minimal env | F3 | merged #22 |
 | ⬜ | 5 — resolve `op` once, fail closed | F5 | open — needs question 2 |
 | ✅ | 6 — faithful run-mode child rendering | F7, F9, F10 | merged #16, + #19 |
-| ⬜ | 7 — identity from exe path, not `comm` | F6 | **next** — needs question 3 |
+| ◐ | 7 — identity from exe path, not `comm` | F6 | merged #23 — impersonation closed, laundering open |
 | ✅ | 8 — invariants + residual risk in docs | (none) | merged #20, + #21 |
 | ⬜ | 9 — graduate to `dev_docs/`, delete plan | (none) | last |
 
-**8 of 10 findings closed** — F1, F2, F3, F4, F7, F8, F9, F10. Outstanding: **F5** (task 5), **F6** (task 7).
+**8½ of 10 findings closed** — F1, F2, F3, F4, F7, F8, F9, F10, and the impersonation half of F6. Outstanding: **F5** (task 5), and F6's **attribution laundering** half, which #23 documented as invariant 9 rather than closing.
 
 Not covered by any task: the **2 candidate sites the scan's verification panel left unreviewed** when it hit its budget. They are unexamined, not cleared, and closing every task below still leaves them that way.
 
@@ -92,7 +92,7 @@ Not covered by any task: the **2 candidate sites the scan's verification panel l
 
 1. ~~**Is a compiled-in absolute-path allowlist for helper binaries acceptable under the "no allowlists, no config" rule in `AGENTS.md`?**~~ **Answered by #14 merging.** The rule targets indirection between the user-typed URI and the read; a helper-path list touches neither and is invisible to the user. `resolveHelper` has since taken a third caller without objection.
 2. **How strict should `op` resolution be (task 5)?** Strict absolute allowlist (`/usr/local/bin/op`, `/opt/homebrew/bin/op`, `/usr/bin/op`) is the strongest, but breaks anyone with `op` installed elsewhere — and breaking a security tool's happy path invites people to stop using it. The looser alternative is: keep `exec.LookPath`, but reject results under the current working tree, relative PATH entries, and `node_modules/.bin`. The plan currently specifies the looser rule with a hard failure on rejection; say the word to tighten it.
-3. **Should the dialog header show the full executable path (task 7), or keep the short name and put the path in the detail line?** Full paths in the header are unambiguous but noisy for the common case (`"claude"` becomes `"/usr/local/bin/claude"`). The plan currently keeps the short name in the header and adds the resolved path to the detail line. **Still open — task 7 needs this before implementation.**
+3. ~~**Should the dialog header show the full executable path (task 7), or keep the short name and put the path in the detail line?**~~ **Answered, and implemented in #23**: short name in the header, path on its own line — in **both** modes, not just the one `Describe()` feeds. The question as written missed that `opx run` sets `CallerDetail` to the *child* command, so a path folded only into `Describe()` would leave run mode — the mode that actually hands over the secrets — with no path at all. That needed a new `prompt.Request.CallerOrigin` field.
 4. ~~**Is a wider truncation limit acceptable for the run-mode line (task 6)?**~~ **Answered by #16 merging**: 300 runes for the child line, explicit `+N more arguments` elision, `argv[0]` never truncated.
 5. ~~**F3's panel is worth a second look.**~~ **Closed by #22.** Two of that finding's three verifiers had been flagged for out-of-scope behaviour during the scan, so the finding was worth re-reading rather than trusting. It held up: the four lines were exactly as described, and the fix landed with three external reviewers (codex, agy, devin) returning no findings.
 6. **What is the durable lesson for display escaping?** Two follow-up fixes on this plan (`0bb2506`, #19) each restored a property the original author believed was held — a missed interpolation site and an unescaped backslash. Both are quoting/escaping bugs found *after* review by someone reading the merged code. Task 8 wrote the rule down (#20).
@@ -101,6 +101,10 @@ Not covered by any task: the **2 candidate sites the scan's verification panel l
 
    **Now fully answered — #21** states the layering in invariant 6 and adds `TestDialogScript_NonPrintableNeverReachesAppleScriptSource` to pin it, so the `%q` can no longer be tidied away silently.
 
-   The lesson that survives, for tasks 5 and 7: **escaping and quoting are where review has actually failed on this plan** — four separate corrections (`0bb2506`, #19, and two caught in co-review on #20 and #21), every one a property the author believed was already held. Two of those were doc claims that overstated coverage, which is the same error in prose. Assert what the code does, then go check; don't assert a count you haven't grepped.
+   The lesson that survives, for task 5: **escaping and quoting are where review has actually failed on this plan** — four separate corrections (`0bb2506`, #19, and two caught in co-review on #20 and #21), every one a property the author believed was already held. Two of those were doc claims that overstated coverage, which is the same error in prose. Assert what the code does, then go check; don't assert a count you haven't grepped.
 
-   **Task 4 adds a corollary about the checking itself.** Its "identity is unchanged" claim was checked with `go test`, which replayed a **cached** result from an earlier sandboxed run and reported `Name() == "unknown"` — a fabricated regression that a second, uncached run disproved. The Bash sandbox also cannot exec the setuid `/bin/ps` at all, so *any* sandboxed run of `internal/caller` exercises the degradation path rather than the real one. For tasks 5 and 7, which touch the same package: verify behaviour with `go test -count=1`, unsandboxed, or the evidence is about the harness rather than the change.
+7. **A task spec is not evidence.** Task 7 asserted that macOS `ps -o comm=` returns an unforgeable executable path. It does not — `ps` echoes the process's own `argv[0]` — and implementing the task as written would have made the dialog vouch for an attacker-chosen location, which is worse than the gap it was closing. The false claim survived planning, re-baselining, and an unblocking review, because it was written by analogy to Linux's `/proc/<pid>/exe` (where it *is* true) and read plausibly every time.
+
+   For task 5, which rests on comparable claims about where `op` lives and how `exec.LookPath` behaves: **run the thing before building on what the plan says about it.** The forgery took one throwaway Go program to demonstrate. Every claim in a task file that begins "X returns…" or "Y cannot be forged" is a claim someone should have tested, and on this plan, twice now, nobody had.
+
+   **Task 4 adds a corollary about the checking itself.** Its "identity is unchanged" claim was checked with `go test`, which replayed a **cached** result from an earlier sandboxed run and reported `Name() == "unknown"` — a fabricated regression that a second, uncached run disproved. The Bash sandbox also cannot exec the setuid `/bin/ps` at all, so *any* sandboxed run of `internal/caller` exercises the degradation path rather than the real one. For task 5, and for anything else touching `internal/caller`: verify behaviour with `go test -count=1`, unsandboxed, or the evidence is about the harness rather than the change.
