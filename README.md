@@ -39,26 +39,26 @@ command, and the environment `opx` inherits.
   name — cannot inject terminal or AppleScript control sequences to repaint
   or forge the dialog.
 - In `opx run`, the dialog names the child that will receive the secrets
-  exactly as you wrote it — never shortened to a bare program name — and
-  shows its arguments — quoted, unshortened, and up to a
-  bounded width. Anything past that width is disclosed as a count of omitted
-  arguments rather than silently dropped, so the destination cannot be
-  hidden by padding the command line.
-- The dialog helper (`osascript`) is located at a fixed absolute path, so a
-  binary planted earlier on `PATH` cannot stand in for it and approve the
-  request itself.
+  exactly as you wrote it, never shortened to a bare program name, with its
+  arguments quoted and unshortened up to a bounded width. Anything past that
+  width is disclosed as a count of omitted arguments rather than silently
+  dropped, so the destination cannot be hidden by padding the command line.
+- Every helper `opx` runs is located at a fixed absolute path rather than
+  through `PATH`: the dialog helper (`osascript`), the two tools that
+  identify the calling process (`ps`, `lsof`), and `op` itself. A binary
+  planted earlier on `PATH` cannot stand in for any of them — it cannot
+  approve the request in place of the dialog, name a program you trust in
+  place of the real caller, or pretend to end the session while leaving it
+  live. (The child command in `opx run` is the one you typed, and is
+  resolved the way your shell would resolve it.)
 
 **Not defended, today:**
 
-- `opx` trusts your `op` install. Every *helper* `opx` runs — the dialog
-  helper, the two tools that identify the calling process, and `op` itself —
-  comes from a fixed absolute location rather than from `PATH`, so a process
-  that controls `PATH` cannot substitute its own. (The child command in
-  `opx run` is the one you typed, and is resolved the way your shell would
-  resolve it.) But `op` normally lives in a Homebrew
-  prefix your account owns, so anything already running as you can replace the
-  real binary. That is a bigger compromise than `opx` is scoped to survive, and
-  it defeats every `op read` you run, not just the ones through `opx`.
+- `opx` trusts your `op` install. Fixing the location `op` is loaded from
+  does not make the binary there genuine: `op` normally lives in a Homebrew
+  prefix your own account owns, so anything already running as you can
+  replace it. That is a bigger compromise than `opx` is scoped to survive,
+  and it defeats every `op read` you run, not just the ones through `opx`.
 - An attacker who can already write to a directory like `/usr/local/bin`, or
   edit your shell profile, is outside what `opx` can reach. It hardens a
   specific, cheap, ambient vector; it is not a defense against a fully
