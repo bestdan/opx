@@ -51,6 +51,12 @@ Makefile                # build, test, test-integration, test-all, lint, clean, 
 All packages are under `internal/` and importable only from this module.
 Add new packages there unless there is a clear reason to expose them.
 
+`internal/caller` and `internal/prompt` carry more security weight than their
+size suggests. Before changing either, read
+[`security-hardening.md`](security-hardening.md) — it records why the caller
+path comes from `lsof` rather than `ps`, and why the dialog's two escaping
+layers deliberately fail differently.
+
 ## Build gotchas
 
 - **`make build` says `version=dev`.** The Makefile injects

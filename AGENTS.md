@@ -103,6 +103,12 @@ Go 1.24+ is required (see `go.mod`).
 These properties are the entire point of the project. Touching them needs
 deliberate intent.
 
+This section is the rule; [`dev_docs/security-hardening.md`](dev_docs/security-hardening.md)
+is the reasoning behind it, including the premises that turned out to be wrong
+on the way there. Read it before changing anything below — several of these
+have a plausible-looking simplification that reopens the hole they close, and
+that file names each one.
+
 1. **Every successful read is preceded by a `Confirmer.Confirm` call.**
    See `confirmAndRead` and `runSubcommand` in `main.go`. In batch /
    `--env` / `opx run` modes a single Confirm covers every URI in the
