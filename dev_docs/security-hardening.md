@@ -14,8 +14,10 @@ Three documents divide this up, and the split matters:
   Each one is named below, because the plausible version is what the next
   person will reach for.
 
-How the work was done is in git history and the PRs (#14–#27). Nothing here
-repeats that.
+How the work was done is in git history and in PRs #14, #15, #16, #19, #20,
+#21, #22, #23, #24, #25, #26 and #27. (#17, which narrowed opx to macOS only,
+is not one of them — but it is why the plan was re-baselined midway, and why
+some of the reasoning below has no Linux half.) Nothing here repeats that.
 
 ## The scan that started it
 
@@ -90,8 +92,8 @@ move together.
 
 **The part that is easy to get wrong is what this establishes.** For
 `osascript`, `ps` and `lsof` it is close to a guarantee: their real candidates
-live under `/bin` and `/usr/bin` on the SIP-sealed system volume, which no
-account can write to. For `op` it is not, and `resolveOp` must never be
+live under `/bin`, `/usr/bin` and `/usr/sbin` on the SIP-sealed system volume,
+which no account can write to. For `op` it is not, and `resolveOp` must never be
 documented as if it inherited that argument. `op` normally lives in a Homebrew
 prefix owned by the invoking user (`/opt/homebrew/bin` is `drwxrwxr-x`, and the
 `op` in it is a user-owned symlink), so anything running as the user can
@@ -125,6 +127,13 @@ defeats opx outright.
 When nothing resolves: the dialog denies, `caller` degrades to `"unknown"` or
 omits the path line, and `op` fails closed — including in `opx run`, where the
 child is not spawned.
+
+That dialog answer is `ErrDenied` — the denial §4 refuses to report for an
+unrenderable rune — and the asymmetry is deliberate. `ErrDenied` has always
+covered "no UI available to ask", and the difference is where the cause lives:
+a bad rune is in the request, so the error can name the code point the caller
+can fix; a missing `/usr/bin/osascript` is a SIP-sealed path gone, with nothing
+in the request to name.
 
 ### 2. The caller path comes from the kernel, never from `ps`
 
@@ -181,9 +190,10 @@ identity catches that, because being a real shell is compatible with being the
 thing you are trying to describe.
 
 **Where** the named process lives, and what was walked past to reach it, *is*
-guaranteed: the subject's path and every skipped ancestor's path are
-kernel-true, and nothing between the subject and opx is silently absorbed.
-Three parts hold that up and none is optional:
+guaranteed — at one deliberate exception's width: the subject's path and every
+skipped ancestor's path are kernel-true, and nothing between the subject and
+opx is silently absorbed **except** the SIP-sealed entries suppressed by the
+third bullet below. Three parts hold that up and none is optional:
 
 - `skippable` gates on **disagreement, not list membership**. An ancestor is
   walked past only when `isUninteresting(comm)` *and* the kernel either agrees
@@ -201,7 +211,9 @@ Three parts hold that up and none is optional:
   ordinary case stays quiet and the line still means something when it appears.
   This is not the location allowlist rejected above: SIP paths are the ones an
   attacker cannot occupy, so suppressing exactly those is a fact about the
-  platform rather than a judgment about a path.
+  platform rather than a judgment about a path. It does hide `zsh evil.sh` —
+  that is the cost, and it is why the guarantee above is stated with this
+  exception rather than around it.
 
 Substituting a skipped shell's argv onto that line was considered and rejected:
 argv is self-asserted, so it would make some entries believable and others not,
@@ -321,12 +333,13 @@ legible. It cannot make an approval considered.
 Kept because the failure modes recurred, and because three of the four were
 caught by someone re-reading merged code rather than by any review of the diff.
 
-1. **Prose claiming more than the code holds** — eight corrections, every one a
-   property its author believed was held. Widening a paragraph to cover a third
+1. **Prose claiming more than the code holds** — the most-corrected class of
+   the effort, every instance a property its author believed was held. Widening a paragraph to cover a third
    case made a pre-existing sentence ("every invocation runs with a minimal
    environment") newly false about two of them. When you edit an invariant,
    re-read the whole invariant.
-2. **Escaping, quoting, and separators** — four corrections. A display quoter
+2. **Escaping, quoting, and separators** — four corrections: `0bb2506`, #19,
+   and two caught in co-review of #20 and #21. A display quoter
    that escaped `"` but not `\`, letting an argument forge its own closing
    quote. A through line joined with `" › "` while entries were raw paths, so a
    directory named `.../Downloads › /bin` rendered as two entries, the second
