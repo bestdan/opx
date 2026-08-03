@@ -1,6 +1,8 @@
 package prompt
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -56,6 +58,432 @@ func TestMessage_BatchListsEveryURIAndName(t *testing.T) {
 	}
 }
 
+func TestMessage_CallerDetailSetSingle(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "python3",
+		CallerDetail: "via claude › python3 linear-archive.py --team PreThink",
+	})
+	want := "\"python3\" wants to read:\n\nvia claude › python3 linear-archive.py --team PreThink\n\nop://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestMessage_CallerDetailRunModeSingle(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerDetail: "to run: python3 linear-archive.py --team PreThink --older-than 1",
+	})
+	want := "\"claude\" wants to read:\n\nto run: python3 linear-archive.py --team PreThink --older-than 1\n\nop://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestMessage_CallerDetailEscapesTerminalControlCharacters(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "python3",
+		CallerDetail: "via python3 report.go\x1b[2J\rforged",
+	})
+	if strings.ContainsAny(got, "\x1b\r") {
+		t.Errorf("message must not contain terminal control characters from CallerDetail: %q", got)
+	}
+	if !strings.Contains(got, `\x1b[2J\x0dforged`) {
+		t.Errorf("message must render removed control characters visibly: %q", got)
+	}
+}
+
+// controlChars are the bytes that must never reach /dev/tty from a
+// caller-controlled field: ESC begins an ANSI sequence, CR rewrites the
+// current line, and DEL (0x7f) sits just below the C1 range (0x80-0x9f)
+// that sanitizeDisplay escapes alongside it.
+const controlChars = "\x1b\r\x7f"
+
+// TestMessage_SingleURIEscapesTerminalControlCharacters covers the
+// single-binding path. The URI is caller-controlled in every input mode —
+// uri.IsOPURI accepts any bytes inside its three segments — so an ESC here
+// clears the screen of the one dialog that authorizes the read.
+func TestMessage_SingleURIEscapesTerminalControlCharacters(t *testing.T) {
+	got := message(Request{
+		Bindings: []Binding{{URI: "op://V/I/f\x1b[2J\x1b[Hopx — routine sync\rAllow? [y/N]: "}},
+		Caller:   "python3",
+	})
+	if strings.ContainsAny(got, controlChars) {
+		t.Errorf("message must not pass control characters through from a URI: %q", got)
+	}
+	if !strings.Contains(got, `\x1b[2J`) {
+		t.Errorf("message must render the escape visibly: %q", got)
+	}
+}
+
+// TestMessage_BatchURIAndNameEscaped covers the --env / --env-file bullet
+// list, the sink an attacker reaches by controlling a committed .env.
+func TestMessage_BatchURIAndNameEscaped(t *testing.T) {
+	got := message(Request{
+		Bindings: []Binding{
+			{Name: "A", URI: "op://V/A/f"},
+			{Name: "B\x1bfake", URI: "op://Private/prod/root\x1b[2K\r  • op://Demo/test/token"},
+		},
+		Caller: "deploy.sh",
+	})
+	if strings.ContainsAny(got, controlChars) {
+		t.Errorf("message must not pass control characters through in batch mode: %q", got)
+	}
+	if !strings.Contains(got, "op://Private/prod/root") {
+		t.Errorf("the real URI must still be disclosed: %q", got)
+	}
+}
+
+// TestMessage_CallerEscaped closes the last interpolation site. The caller
+// name comes from a self-asserted process name, so it is caller-controlled
+// too.
+func TestMessage_CallerEscaped(t *testing.T) {
+	got := message(Request{
+		Bindings: []Binding{{URI: "op://V/I/f"}},
+		Caller:   "python3\x1b[2Jclaude",
+	})
+	if strings.ContainsAny(got, controlChars) {
+		t.Errorf("message must not pass control characters through from Caller: %q", got)
+	}
+	// Doubled backslash: sanitizeDisplay emits \x1b, then the header's %q
+	// escapes that backslash again. Asserting the escape is *present* — not
+	// just that the raw byte is gone — is what distinguishes rendering the
+	// escape visibly from silently dropping it.
+	if !strings.Contains(got, `\\x1b[2J`) {
+		t.Errorf("message must render the escape visibly: %q", got)
+	}
+}
+
+// TestDialogTitle_Escaped covers the one dialog interpolation that is not in
+// message()'s body. An unsanitized ESC here does not repaint a terminal — the
+// title only reaches the macOS GUI dialog — but %q renders it as \x1b, which
+// AppleScript rejects, so the script fails to parse and opx reports a denial
+// for a request the user never saw.
+func TestDialogTitle_Escaped(t *testing.T) {
+	got := dialogTitle(Request{Caller: "python3\x1b[2J\rclaude"})
+	if strings.ContainsAny(got, controlChars) {
+		t.Errorf("dialogTitle must not pass control characters through: %q", got)
+	}
+	if !strings.Contains(got, `\x1b[2J`) {
+		t.Errorf("dialogTitle must render the escape visibly: %q", got)
+	}
+}
+
+// TestDialogTitle_BenignUnchanged is the counterpart regression guard: an
+// ordinary caller name must render byte-for-byte as before.
+func TestDialogTitle_BenignUnchanged(t *testing.T) {
+	got := dialogTitle(Request{Caller: "deploy.sh"})
+	want := "opx — deploy.sh requesting secret access"
+	if got != want {
+		t.Errorf("dialogTitle = %q, want %q", got, want)
+	}
+}
+
+// TestDialogScript_NonPrintableNeverReachesAppleScriptSource pins the second
+// half of the escaping guard, which sanitizeDisplay does not provide.
+//
+// sanitizeDisplay escapes C0/C1 and every other non-printable rune whose
+// effect is confined to itself. A Unicode bidi override (U+202E) is neither:
+// it is left raw on purpose, so it reaches dialogScript intact — and a raw
+// U+202E inside the AppleScript string literal would render, reordering the
+// displayed path so a URI can lie about which secret is being requested. What
+// stops it is the %q dialogScript wraps the body and title in: Go escapes any
+// non-printable rune to a literal \uXXXX, and AppleScript's parser rejects that
+// token, so the script cannot run. Fails closed.
+//
+// confirmDarwin now catches the same runes before it spends an osascript at
+// all, and returns ErrUndisplayable rather than a denial — see
+// TestConfirmDarwin_UndisplayableRuneIsNotADenial. That is a diagnostic, not a
+// replacement: this %q is what holds if text ever reaches dialogScript without
+// passing that check.
+//
+// The assertion is on the generated source, not on osascript's behaviour, so
+// this stays a hermetic unit test (AGENTS.md forbids shelling out to a real
+// osascript). Replace either %q with plain interpolation and this fails.
+func TestDialogScript_NonPrintableNeverReachesAppleScriptSource(t *testing.T) {
+	// Written as a Go escape, not the literal character: a raw U+202E in this
+	// file would reorder the source for whoever reads it next.
+	const rlo = "\u202e"
+
+	got := dialogScript(Request{
+		Bindings: []Binding{{URI: "op://Private/prod/root" + rlo + "gnip"}},
+		Caller:   "claude" + rlo + "hs.yolped",
+	}, "with icon caution")
+
+	if strings.Contains(got, rlo) {
+		t.Errorf("raw U+202E reached the AppleScript source — a bidi override in the "+
+			"dialog can reorder the displayed URI: %q", got)
+	}
+	if !strings.Contains(got, "\\u202e") {
+		t.Errorf("expected the override to survive as an escaped \\u202e token "+
+			"(which AppleScript rejects, so the request fails closed): %q", got)
+	}
+}
+
+// TestMessage_SelfContainedNonPrintablesRenderVisibly covers the item names
+// this whole class of rune actually shows up in: U+200D joins an emoji
+// sequence, U+00A0 is what macOS types on option-space, and the U+E0000 tag
+// characters build a flag emoji. None of them re-orders or breaks the text
+// around it, so an escape is a complete description and the read proceeds.
+//
+// Before they were escaped here, dialogScript's %q turned each into a literal
+// \uXXXX, AppleScript rejected the script, and opx reported "access denied by
+// user" for a dialog nobody was ever shown — i.e. an ordinary 1Password item
+// was simply unreadable through opx, and the failure named the wrong cause.
+func TestMessage_SelfContainedNonPrintablesRenderVisibly(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		uri  string
+		want string
+	}{
+		{"emoji ZWJ", "op://Private/\U0001f468\u200d\U0001f4bb Work/token", `\u200d`},
+		{"option-space NBSP", "op://Private/My\u00a0Item/token", `\u00a0`},
+		{"emoji tag character", "op://Private/\U0001f3f4\U000e0067 Team/token", `\U000e0067`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := message(Request{Bindings: []Binding{{URI: tc.uri}}, Caller: "claude"})
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("expected the rune to render as a visible %s escape: %q", tc.want, got)
+			}
+			if r, bad := undisplayableRune(got); bad {
+				t.Errorf("U+%04X must not make the request undisplayable — it has no "+
+					"effect on the text around it, so escaping it is a complete answer", r)
+			}
+		})
+	}
+}
+
+// TestConfirmDarwin_UndisplayableRuneIsNotADenial pins the other half: the
+// runes that do re-order or break their surroundings still fail closed, and
+// the failure no longer arrives as ErrDenied.
+//
+// confirmDarwin returns before it resolves or execs osascript, so this stays
+// hermetic — nothing here shells out.
+func TestConfirmDarwin_UndisplayableRuneIsNotADenial(t *testing.T) {
+	// Written as Go escapes, not literal characters: a raw one in this file
+	// would re-order or break the source for whoever reads it next.
+	for _, tc := range []struct {
+		name string
+		bad  string
+	}{
+		{"RLO override", "\u202e"},
+		{"line separator", "\u2028"},
+		{"paragraph separator", "\u2029"},
+		{"RLM mark", "\u200f"},
+		{"first strong isolate", "\u2068"},
+		{"Arabic letter mark", "\u061c"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := confirmDarwin(Request{
+				Bindings: []Binding{{URI: "op://Private/prod/root" + tc.bad + "gnip"}},
+				Caller:   "claude",
+			}, io.Discard)
+
+			if !errors.Is(err, ErrUndisplayable) {
+				t.Fatalf("confirmDarwin err = %v, want ErrUndisplayable", err)
+			}
+			if errors.Is(err, ErrDenied) {
+				t.Errorf("must not report a denial for a dialog the user never saw: %v", err)
+			}
+			if err == nil {
+				t.Error("must fail closed")
+			}
+		})
+	}
+}
+
+// TestConfirmDarwin_UndisplayableRuneCaughtInEveryField pins the same property
+// for the fields that are not URIs — and it earns its place because the caller
+// name reaches the check by a route that is easy to break.
+//
+// message() puts the caller through its header's %q, which escapes the rune
+// before undisplayableRune ever sees the body. What catches it is dialogTitle,
+// which interpolates with %s. So "an undisplayable rune anywhere in the request
+// is reported as one" currently rests on dialogTitle *not* quoting — and adding
+// a %q there, a plausible reading of invariant 6, would silently send this case
+// back to reporting a denial. This test is what fails if that happens.
+func TestConfirmDarwin_UndisplayableRuneCaughtInEveryField(t *testing.T) {
+	const rlo = "\u202e"
+	for _, tc := range []struct {
+		name string
+		req  Request
+	}{
+		{"caller", Request{Caller: "claude" + rlo + "hs.yolped"}},
+		{"caller detail", Request{Caller: "claude", CallerDetail: "to run: /bin/sh" + rlo + "gnip"}},
+		{"caller origin", Request{Caller: "claude", CallerOrigin: "from /tmp/x" + rlo + "gnip"}},
+		{"caller through", Request{Caller: "claude", CallerThrough: "through /bin/zsh" + rlo}},
+		{"binding name", Request{Caller: "claude", Bindings: []Binding{
+			{Name: "A" + rlo + "B", URI: "op://V/I/f"}, {Name: "C", URI: "op://V/I/g"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := tc.req
+			if req.Bindings == nil {
+				req.Bindings = []Binding{{URI: "op://V/I/f"}}
+			}
+			if err := confirmDarwin(req, io.Discard); !errors.Is(err, ErrUndisplayable) {
+				t.Errorf("confirmDarwin err = %v, want ErrUndisplayable", err)
+			}
+		})
+	}
+}
+
+// TestConfirmDarwin_UndisplayableErrorNamesTheCodePointOnly guards the one
+// place this error is allowed to describe caller-controlled text. It names the
+// code point; it must not echo the string, because the error reaches stderr
+// and reproducing the rune there is the terminal version of the problem the
+// sanitizer exists to prevent.
+func TestConfirmDarwin_UndisplayableErrorNamesTheCodePointOnly(t *testing.T) {
+	err := confirmDarwin(Request{
+		Bindings: []Binding{{URI: "op://Private/prod/root\u202egnip"}},
+		Caller:   "claude",
+	}, io.Discard)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), "U+202E") {
+		t.Errorf("error must name the offending code point: %v", err)
+	}
+	if strings.ContainsRune(err.Error(), '\u202e') {
+		t.Errorf("error must not carry the raw rune to stderr: %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "gnip") {
+		t.Errorf("error must not echo caller-controlled text: %q", err.Error())
+	}
+}
+
+// TestMessage_BenignInputUnchanged is the regression guard on the sanitizer:
+// normal URIs, unicode item names, and shell variable names must render
+// byte-for-byte as before. A sanitizer that mangles ordinary output trains
+// users to ignore the dialog.
+func TestMessage_BenignInputUnchanged(t *testing.T) {
+	got := message(Request{
+		Bindings: []Binding{{Name: "TOKEN", URI: "op://Personal/Café/pässwörd"}},
+		Caller:   "deploy.sh",
+	})
+	want := "\"deploy.sh\" wants to read 1 secret:\n\n\n  • op://Personal/Café/pässwörd  →  $TOKEN"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestMessage_CallerDetailEmpty(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "bash",
+		CallerDetail: "",
+	})
+	if strings.Contains(got, "via ") {
+		t.Errorf("message must not contain a via line when CallerDetail is empty: %q", got)
+	}
+}
+
+func TestMessage_CallerDetailEqualToCaller_NoDuplicateLine(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "bash",
+		CallerDetail: "bash",
+	})
+	if strings.Contains(got, "via ") {
+		t.Errorf("message must not add a via line duplicating Caller: %q", got)
+	}
+}
+
+func TestMessage_CallerDetailViaCallerOnly_NoDuplicateLine(t *testing.T) {
+	// The realistic shape a caller produces when caller.Describe() falls back
+	// to the bare Caller name (e.g. single-token argv suppressed any
+	// ancestor prefix): "via <Caller>" adds nothing beyond the header.
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerDetail: "via claude",
+	})
+	if strings.Contains(got, "via ") {
+		t.Errorf("message must not add a via line duplicating Caller: %q", got)
+	}
+}
+
+func TestMessage_CallerDetailViaAncestorPrefixOfCaller_NoDuplicateLine(t *testing.T) {
+	// "via ghostty › claude" strips to "claude", which equals Caller — no
+	// information beyond the header.
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerDetail: "via ghostty › claude",
+	})
+	if strings.Contains(got, "via ") {
+		t.Errorf("message must not add a via line duplicating Caller: %q", got)
+	}
+}
+
+func TestMessage_CallerDetailCaseInsensitiveDuplicate(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "Terminal",
+		CallerDetail: "via terminal",
+	})
+	if strings.Contains(got, "via ") {
+		t.Errorf("message must not add a via line duplicating Caller case-insensitively: %q", got)
+	}
+}
+
+func TestMessage_CallerDetailRunModeMatchingCaller_NotSuppressed(t *testing.T) {
+	// `opx run ... -- claude` invoked from claude renders a child argv equal
+	// to Caller, but the two are different processes: the header names who
+	// asked, the detail names who receives the secrets. Suppressing this line
+	// would make the dialog indistinguishable from a plain read.
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerDetail: "to run: claude",
+	})
+	if !strings.Contains(got, "to run: claude") {
+		t.Errorf("message must keep a to-run line even when it matches Caller: %q", got)
+	}
+}
+
+func TestMessage_CallerDetailSetBatch(t *testing.T) {
+	bindings := []Binding{
+		{Name: "A", URI: "op://V/A/f"},
+		{Name: "B", URI: "op://V/B/f"},
+	}
+	got := message(Request{
+		Bindings:     bindings,
+		Caller:       "deploy.sh",
+		CallerDetail: "via claude › deploy.sh --prod",
+	})
+	if !strings.Contains(got, "via claude › deploy.sh --prod") {
+		t.Errorf("batch message missing via line: %q", got)
+	}
+	for _, b := range bindings {
+		if !strings.Contains(got, b.URI) {
+			t.Errorf("URI %q missing from batch message with CallerDetail: %q", b.URI, got)
+		}
+	}
+}
+
+func TestMessage_CallerDetailRunModeBatch(t *testing.T) {
+	bindings := []Binding{
+		{Name: "A", URI: "op://V/A/f"},
+		{Name: "B", URI: "op://V/B/f"},
+	}
+	got := message(Request{
+		Bindings:     bindings,
+		Caller:       "claude",
+		CallerDetail: "to run: python3 linear-archive.py --team PreThink --older-than 1",
+	})
+	if !strings.Contains(got, "to run: python3 linear-archive.py --team PreThink --older-than 1") {
+		t.Errorf("batch message missing to-run detail line: %q", got)
+	}
+	for _, b := range bindings {
+		if !strings.Contains(got, b.URI) {
+			t.Errorf("URI %q missing from batch message with CallerDetail: %q", b.URI, got)
+		}
+	}
+}
+
 func TestMessage_BatchWithoutNamesStillListsURIs(t *testing.T) {
 	// Defensive: even if Name is empty in batch mode the URI must still appear.
 	bindings := []Binding{
@@ -70,5 +498,234 @@ func TestMessage_BatchWithoutNamesStillListsURIs(t *testing.T) {
 	}
 	if strings.Contains(got, "$") {
 		t.Errorf("no Name set, but message contained $: %q", got)
+	}
+}
+
+func TestDialogScript_BeepsBeforeDisplayingDialog(t *testing.T) {
+	// The beep is the tamper-evidence signal: it must fire as its own
+	// statement ahead of the dialog, not somewhere inside the dialog's
+	// arguments where AppleScript would treat it as text.
+	got := dialogScript(Request{
+		Bindings: []Binding{{URI: "op://V/I/f"}},
+		Caller:   "bash",
+	}, "with icon caution")
+
+	if !strings.HasPrefix(got, "beep 3\n") {
+		t.Fatalf("script does not open with a beep statement: %q", got)
+	}
+	beep := strings.Index(got, "beep")
+	dialog := strings.Index(got, "display dialog")
+	if dialog < 0 {
+		t.Fatalf("script has no display dialog: %q", got)
+	}
+	if beep > dialog {
+		t.Errorf("beep at %d comes after display dialog at %d: %q", beep, dialog, got)
+	}
+}
+
+func TestDialogScript_BeepIsNotConfigurable(t *testing.T) {
+	// Pins the narrow thing it can actually pin: dialogScript emits the beep
+	// as a pure function of its arguments, consulting nothing else. It does
+	// not — and cannot — prove the beep is unsuppressible overall; a switch
+	// added in confirmDarwin, which is where one would naturally go, would
+	// leave this green. The guard against that is the AGENTS.md entry and
+	// review, not this test.
+	got := dialogScript(Request{
+		Bindings: []Binding{{URI: "op://V/I/f"}},
+		Caller:   "bash",
+	}, "with icon caution")
+
+	if !strings.Contains(got, "beep") {
+		t.Errorf("environment suppressed the beep: %q", got)
+	}
+}
+
+// TestMessage_CallerOriginRunMode is the run-mode disclosure: the detail line
+// there describes the child about to receive the secrets, so the origin line
+// is the only place the dialog says where the *requesting* process lives.
+func TestMessage_CallerOriginRunMode(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{Name: "AWS_KEY", URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerOrigin: "from /Users/x/.cache/claude (unverified location)",
+		CallerDetail: "to run: /usr/bin/env node ./deploy.js",
+	})
+	want := "\"claude\" wants to read 1 secret:\n\n" +
+		"from /Users/x/.cache/claude (unverified location)\n" +
+		"to run: /usr/bin/env node ./deploy.js\n\n" +
+		"  • op://V/I/f  →  $AWS_KEY"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerOriginSingle pins the same line in the single-URI branch,
+// so the two branches cannot drift apart.
+func TestMessage_CallerOriginSingle(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerOrigin: "from /usr/local/bin/claude",
+		CallerDetail: "via /usr/local/bin/claude --resume",
+	})
+	want := "\"claude\" wants to read:\n\n" +
+		"from /usr/local/bin/claude\n" +
+		"via /usr/local/bin/claude --resume\n\n" +
+		"op://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerOriginAloneRenders covers an origin line with no detail
+// line beside it — the detail can be suppressed as duplicative, and the origin
+// must not disappear with it.
+func TestMessage_CallerOriginAloneRenders(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerOrigin: "from /usr/local/bin/claude",
+		CallerDetail: "via claude",
+	})
+	want := "\"claude\" wants to read:\n\n" +
+		"from /usr/local/bin/claude\n\n" +
+		"op://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerOriginEmptyOmitsLine: an unknown path is an honest gap,
+// and must not render as a blank line implying one was checked.
+func TestMessage_CallerOriginEmptyOmitsLine(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerDetail: "via claude --resume",
+	})
+	want := "\"claude\" wants to read:\n\nvia claude --resume\n\nop://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerThroughSingle pins the through line in the single-URI
+// branch. It is the disclosure that keeps subject selection from being a
+// laundering target: the header names one process, and this says what stood
+// between that process and opx.
+func TestMessage_CallerThroughSingle(t *testing.T) {
+	got := message(Request{
+		Bindings:      []Binding{{URI: "op://V/I/f"}},
+		Caller:        "claude",
+		CallerOrigin:  "from /usr/local/bin/claude",
+		CallerThrough: "through /Users/x/.cache/tools/bash › unknown",
+		CallerDetail:  "via /usr/local/bin/claude --resume",
+	})
+	want := "\"claude\" wants to read:\n\n" +
+		"from /usr/local/bin/claude\n" +
+		"through /Users/x/.cache/tools/bash › unknown\n" +
+		"via /usr/local/bin/claude --resume\n\n" +
+		"op://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerThroughRunMode pins the same line in the batch branch,
+// which is the one `opx run` takes. There the detail line is spent on the child
+// about to receive the secrets, so this line and the header are the whole
+// account of who asked — the reason CallerThrough is set in both modes rather
+// than only where the ancestry is otherwise described.
+func TestMessage_CallerThroughRunMode(t *testing.T) {
+	got := message(Request{
+		Bindings:      []Binding{{Name: "AWS_KEY", URI: "op://V/I/f"}},
+		Caller:        "claude",
+		CallerOrigin:  "from /usr/local/bin/claude",
+		CallerThrough: "through /Users/x/.cache/tools/bash",
+		CallerDetail:  "to run: /usr/bin/env node ./deploy.js",
+	})
+	want := "\"claude\" wants to read 1 secret:\n\n" +
+		"from /usr/local/bin/claude\n" +
+		"through /Users/x/.cache/tools/bash\n" +
+		"to run: /usr/bin/env node ./deploy.js\n\n" +
+		"  • op://V/I/f  →  $AWS_KEY"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerThroughAloneRenders: the detail line can be suppressed as
+// duplicative and the origin line can be absent when the path is unknown. The
+// disclosure must not disappear with either of them.
+func TestMessage_CallerThroughAloneRenders(t *testing.T) {
+	got := message(Request{
+		Bindings:      []Binding{{URI: "op://V/I/f"}},
+		Caller:        "claude",
+		CallerThrough: "through /Users/x/.cache/tools/bash",
+		CallerDetail:  "via claude",
+	})
+	want := "\"claude\" wants to read:\n\n" +
+		"through /Users/x/.cache/tools/bash\n\n" +
+		"op://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerThroughEmptyOmitsLine: nothing worth disclosing renders as
+// nothing. A blank "through" line on every ordinary read is what trains a user
+// to skim past the one that matters.
+func TestMessage_CallerThroughEmptyOmitsLine(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerDetail: "via claude --resume",
+	})
+	want := "\"claude\" wants to read:\n\nvia claude --resume\n\nop://V/I/f"
+	if got != want {
+		t.Errorf("message =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestMessage_CallerThroughEscapesTerminalControlCharacters: every entry on
+// this line is a path chosen by a process the user did not vet — that is the
+// whole point of showing it — so it is subject to invariant 6 like every other
+// interpolation. A CR here would repaint the dialog that authorizes the read,
+// and this line is one an attacker can cause to exist at all.
+func TestMessage_CallerThroughEscapesTerminalControlCharacters(t *testing.T) {
+	got := message(Request{
+		Bindings:      []Binding{{URI: "op://V/I/f"}},
+		Caller:        "claude",
+		CallerThrough: "through /tmp/evil\r\x1b[2Kthrough /bin/zsh",
+	})
+	if strings.ContainsAny(got, "\r\x1b") {
+		t.Errorf("message passed a raw control character through: %q", got)
+	}
+	if !strings.Contains(got, `\x0d`) || !strings.Contains(got, `\x1b`) {
+		t.Errorf("message = %q, want the control bytes rendered visibly as \\x0d and \\x1b", got)
+	}
+	if !strings.Contains(got, "/tmp/evil") {
+		t.Errorf("message = %q, want the real path still shown", got)
+	}
+}
+
+// TestMessage_CallerOriginEscapesTerminalControlCharacters: the executable
+// path is caller-controlled — a process chooses where it lives — so the origin
+// line is subject to invariant 6 like every other interpolation. A CR here
+// would repaint the one dialog that authorizes the read.
+func TestMessage_CallerOriginEscapesTerminalControlCharacters(t *testing.T) {
+	got := message(Request{
+		Bindings:     []Binding{{URI: "op://V/I/f"}},
+		Caller:       "claude",
+		CallerOrigin: "from /tmp/evil\r\x1b[2Kfrom /usr/local/bin/claude",
+	})
+	if strings.ContainsAny(got, "\r\x1b") {
+		t.Errorf("message passed a raw control character through: %q", got)
+	}
+	if !strings.Contains(got, `\x0d`) || !strings.Contains(got, `\x1b`) {
+		t.Errorf("message = %q, want the control bytes rendered visibly as \\x0d and \\x1b", got)
+	}
+	if !strings.Contains(got, "/tmp/evil") {
+		t.Errorf("message = %q, want the real path still shown", got)
 	}
 }

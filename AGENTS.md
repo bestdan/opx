@@ -7,7 +7,10 @@ this repository. Humans should read `README.md` first.
 
 `opx` is a small Go CLI that wraps the 1Password `op` binary to force a
 biometric prompt on every secret read and to invalidate the `op` session
-token after every invocation. It is a **security tool**: changes that
+token after every invocation. It targets **macOS only** — the confirm
+dialog is AppleScript and the caller lookup shells out to `ps` and `lsof`;
+other
+platforms are not supported or tested. It is a **security tool**: changes that
 weaken the trust boundary need to be flagged explicitly, not slipped in
 as cleanup.
 
@@ -16,15 +19,28 @@ as cleanup.
 ```
 main.go                 # entry point; argument parsing, exit codes, signal & panic handling
 main_test.go            # end-to-end tests of run() with fake Runner/Confirmer
-internal/caller/        # parent process name (ppid → /proc/.../comm or `ps`)
+run_subcommand_test.go  # tests for `opx run` (fake Runner/Confirmer/Spawner)
+internal/caller/        # caller identity: ppid/name via `ps`, executable path via `lsof`
+internal/envfile/       # dotenv-style NAME=VALUE parser used by `opx run --env-file`
 internal/oprunner/      # `op read` / `op signout` subprocess wrapper (Runner interface)
-internal/prompt/        # platform-native confirm dialog (osascript / zenity / /dev/tty)
+internal/prompt/        # native macOS confirm dialog (osascript)
 internal/prompt/assets/ # embedded white-on-transparent PNG (Go recolors at runtime); build/ has the Python source — `make icon`
 internal/shellquote/    # POSIX single-quote escaper for --env output
+internal/spawn/         # exec wrapper used by `opx run` (Spawner interface)
 internal/uri/           # `op://vault/item/field` syntax validator
 scripts/                # local-dev scaffolding: fixtures, smoke test, install helper
 Makefile                # build, test, test-integration, test-all, lint, clean, cross
+skills/                 # Claude Code skills shipped with the repo (1password-audit/migrate/onboard/scaffold)
+.claude-plugin/         # plugin + marketplace manifests making this repo installable as a Claude Code plugin
 ```
+
+`skills/` is documentation, not code — no Go build or test touches it. Two
+things to keep consistent when editing it: the skills recommend `opx` only
+where raw `op read` would have been used (`op run` and `op inject` stay as
+they are, since they scope secrets to a subprocess or a gitignored file),
+and they must not claim `opx` accepts `--account` — it doesn't, it follows
+`OP_ACCOUNT`. Bump `version` in the skill frontmatter and in both
+`.claude-plugin/*.json` manifests when the content changes materially.
 
 All packages are under `internal/` and importable only from this module.
 Add new packages there unless there is a clear reason to expose them.
@@ -37,7 +53,7 @@ make test              # unit tests (hermetic; what CI runs)
 make test-integration  # local-only: hits real op binary, requires scripts/.env.example
 make test-all          # test + test-integration
 make lint              # go vet ./...
-make cross             # CGO_ENABLED=0 builds for darwin-arm64, darwin-amd64, linux-amd64
+make cross             # CGO_ENABLED=0 builds for darwin-arm64, darwin-amd64
 make clean
 ```
 
@@ -61,8 +77,11 @@ Go 1.24+ is required (see `go.mod`).
 - **Errors are wrapped with `%w`** so callers can use `errors.Is` /
   `errors.As`. `prompt.ErrDenied` is the canonical sentinel for user
   denial — return it (or wrap it) rather than inventing parallel errors.
+  `prompt.ErrUndisplayable` is not an exception: it names a different
+  condition — no dialog was ever drawn, so nobody denied anything — and
+  exists so that a non-denial stops being reported as one.
 - **Exit codes are centralized** in `main.go` (`exitSuccess`, `exitOpFail`,
-  `exitUsage`). Reuse them; don't introduce ad-hoc integers.
+  `exitUsage`, `exitDenied`). Reuse them; don't introduce ad-hoc integers.
 - **No `fmt.Println` to stdout** outside of writing the secret bytes —
   `os.Stdout` is the secret channel. Diagnostics go to `os.Stderr`.
 
@@ -76,41 +95,303 @@ Go 1.24+ is required (see `go.mod`).
   through those interfaces rather than calling the real `op` or `osascript`
   directly. See `main_test.go` for the `fakeRunner` / `fakeConfirmer`
   pattern.
-- Don't write tests that shell out to a real `op`, `osascript`, or
-  `zenity`; CI will not have them.
+- Don't write tests that shell out to a real `op` or `osascript`; CI
+  will not have them.
 
 ## Security invariants — do not regress
 
 These properties are the entire point of the project. Touching them needs
 deliberate intent.
 
+This section is the rule; [`dev_docs/security-hardening.md`](dev_docs/security-hardening.md)
+is the reasoning behind it, including the premises that turned out to be wrong
+on the way there. Read it before changing anything below — several of these
+have a plausible-looking simplification that reopens the hole they close, and
+that file names each one.
+
 1. **Every successful read is preceded by a `Confirmer.Confirm` call.**
-   See `confirmAndRead` in `main.go`. In `--env` batch mode a single
-   Confirm covers every URI in the request; the dialog must show all of
-   them so the user can review the full set before approving.
+   See `confirmAndRead` and `runSubcommand` in `main.go`. In batch /
+   `--env` / `opx run` modes a single Confirm covers every URI in the
+   request; the dialog must show all of them so the user can review the
+   full set before approving. (`opx run` skips Confirm only when there
+   are zero `op://` references — it then behaves as a plain dotenv
+   loader.)
 2. **`Runner.ForgetSession` is called on every exit path** — success,
-   error, signal, panic. See the `defer` in `main()` and the unconditional
-   call in `readAndForget` in `main.go`. Batch mode does not change this:
-   one Forget per invocation, regardless of N.
+   error, signal, panic. See the `defer` in `main()` and the
+   unconditional calls in `readAndForget` and `runSubcommand`. Batch and
+   run modes do not change this: one Forget per invocation, regardless
+   of N. In `opx run`, ForgetSession runs **before** the child is
+   spawned so the child never inherits a usable op session — and a
+   ForgetSession *failure* there is fatal: the child is not spawned.
+   Run mode fails closed because it hands control to a potentially
+   long-lived child; the other modes exit immediately, so they only
+   warn.
 3. **`op://` URIs are validated before being passed to `op`.** All args
    run through `uri.IsOPURI` before the read. Validation happens before
    `Confirm`, so a malformed URI fails as a usage error without prompting.
-4. **Secrets only ever go to `os.Stdout`.** Don't log them, don't include
-   them in error messages, don't write them to temp files. In `--env`
-   mode they are shell-quoted via `internal/shellquote` before stdout,
-   but they still only leave the process via stdout.
-5. **Batch reads are atomic.** If any read in a `--env` batch fails,
-   nothing goes to stdout. Half-populated environments are a footgun,
-   not a feature.
+   In `opx run`, a value that starts with `op://` but fails validation
+   is rejected as a usage error rather than silently passed through as
+   a literal string.
+   The rule is not purely syntactic: `IsOPURI` also rejects **control
+   characters** (any rune `< 0x20`, or in `0x7f`–`0x9f`), **invalid
+   UTF-8**, and anything over **1024 bytes**. Each has a reason that is
+   not "tidy input", and none should be relaxed as one:
+   - Control characters would otherwise reach the dialog and be shown as
+     `\x1b` escapes by `sanitizeDisplay` — safe, but leaving the user to
+     interpret gibberish in the one prompt that authorizes the read.
+     Rejecting them at the door means the prompt is never drawn.
+     The test is over **runes, not bytes**: bytes in `0x80`–`0x9f` are
+     ordinary UTF-8 continuation bytes (verified — `‘quoted’`, `日本` and
+     `—dash` all contain them), so a byte scan would reject real vault
+     names. 1Password names legitimately carry spaces, punctuation and
+     unicode.
+     What that does **not** mean is that such a URI resolves. `op`'s own
+     secret-reference parser accepts only a restricted ASCII set —
+     verified 2026-08-01, it rejects `é`, `日`, `—`, `‘`, an emoji, an
+     NBSP, an ASCII apostrophe and a tab — so an item with a unicode
+     name is reachable only by its (ASCII) item ID. `IsOPURI` must
+     still not encode that rule: it is `op`'s parser, `op`'s error is
+     the authoritative one, and a copy here would reject names a future
+     `op` accepts. The point of the rune-vs-byte test is that opx is
+     not the thing doing the rejecting.
+   - Invalid UTF-8 is rejected because ranging over a string decodes a
+     bad byte as `U+FFFD`, so a raw `0x9b` passes a rune-only test. It
+     cannot reach AppleScript — `sanitizeDisplay` ranges over runes too
+     — but the user would approve a dialog reading `�` while `op`
+     receives the original byte. **The approved text and the used text
+     must be the same string.**
+   - The length cap is the only one of the three that restricts
+     otherwise-legitimate input. A URI the dialog cannot show in full is
+     one the user cannot review, and truncation that hides the tail is
+     how a URI lies about which secret it names.
+4. **Secrets leave the process only via the chosen sink.** In single
+   and `--env` modes that sink is `os.Stdout` (shell-quoted via
+   `internal/shellquote` in `--env` mode). In `opx run` the sink is the
+   child process's environment — secrets must never be written to opx's
+   own stdout in run mode. Don't log them, don't include them in error
+   messages, don't write them to temp files.
+5. **Batch reads are atomic.** If any read in a `--env` or `opx run`
+   batch fails, nothing reaches the sink — no stdout output, and in run
+   mode the child is not spawned at all. Half-populated environments
+   are a footgun, not a feature.
+6. **Every caller-controlled value the user sees passes through
+   `sanitizeDisplay`** — dialog body *and* title. See `message` and
+   `dialogTitle` in `internal/prompt`. The URI is attacker-controlled in
+   every input mode: invariant 3's validator rejects control characters
+   and invalid UTF-8, but any printable text is still legal inside a
+   segment — and `internal/prompt` does not call that validator, so this
+   invariant must hold on its own. The two are halves of one defense, not
+   a rule and its backup; this half is what still holds if a future input
+   path reaches the dialog without passing through `IsOPURI`. The caller
+   name is a self-asserted process name. Scope this to "every
+   place caller-controlled text reaches the user", not to one function:
+   the original sweep was scoped to `message()`, and `dialogTitle` — the
+   interpolation it missed — needed a follow-up fix. Unescaped, a CR or
+   ESC repaints the one dialog that authorizes the read.
+
+   `sanitizeDisplay` is only half the guard, and the halves fail
+   differently on purpose. It renders visibly — so the dialog still
+   shows — every rune whose effect is confined to itself: C0/C1
+   (`< 0x20`, `0x7f`–`0x9f`) as `\xNN`, and every other
+   `!strconv.IsPrint` rune as `\uXXXX`. The runes it deliberately leaves
+   raw are the ones whose effect is on the text *around* them, where an
+   escaped rendering and a raw one disagree about what the rest of the
+   URI says: `altersSurroundingText`, i.e. `unicode.Bidi_Control` plus
+   `Zl`/`Zp`. Those are caught by the `%q` verbs on the
+   dialog-construction path — Go renders the rune as a literal
+   `\uXXXX`, AppleScript's parser rejects that, `osascript` exits
+   non-zero — so the request fails closed rather than rendering a
+   reordered path.
+
+   That boundary sits where it does on purpose, and it moves in both
+   directions:
+
+   - **Narrowing it** — escaping bidi controls visibly too — removes
+     the fail-closed and leaves nothing but an escaper holding the one
+     dialog that authorizes the read.
+   - **Widening it** — leaving more runes raw — takes down whole
+     requests over a rune in *any* dialog string. That was the state
+     before task 11: `%q` held the entire non-printable range, so a
+     U+00A0 anywhere — a caller's directory name, an `opx run` child
+     command — failed the script and reported a denial, for a URI that
+     was ordinary ASCII. Be exact about the URI case, because the
+     obvious reading is wrong: `op`'s own secret-reference parser
+     rejects every non-ASCII rune (see invariant 3), so an item named
+     with an emoji ZWJ sequence was never readable by name anyway.
+     What this boundary governs is the rest of the dialog.
+   - **Enumerating the set** instead of asking `unicode` for it rots.
+     The list drafted for exactly this purpose omitted U+061C, U+200E
+     and U+200F.
+
+   `confirmDarwin` checks for those runes before it spends an
+   `osascript`, and returns `ErrUndisplayable` — the dialog was never
+   drawn, so there is no user to attribute a refusal to, and reporting
+   `ErrDenied` there blamed the user for a decision they never made. It
+   is a diagnostic, not a guard: if it ever disagreed with
+   `sanitizeDisplay`, `%q` is still what stops the rune reaching a
+   rendered dialog. `ErrUndisplayable` fails closed exactly like
+   `ErrDenied` — `main` reports it on stderr regardless of verbosity
+   and exits 1, which keeps exit 3 meaning "the user said no".
+
+   The `%q` verbs are spread across more sites than the two obvious
+   ones: `dialogScript` wraps the assembled body and the title, and
+   `message` quotes the caller name into its header line in each of its
+   branches. Grep `%q` across `internal/prompt` rather than trusting a
+   count. **Do not "simplify" any of them into plain interpolation**
+   — they are the half that stops a URI from lying about which secret
+   is being requested.
+   `TestDialogScript_NonPrintableNeverReachesAppleScriptSource` guards
+   it; if that test is in your way, you are removing the guard, not the
+   noise.
+7. **Security-critical helpers are resolved from compiled-in absolute
+   paths, never PATH.** Three screeners do this, deliberately duplicated
+   rather than shared: `resolveHelper` in `internal/prompt` (covering
+   `osascript` and the `defaults` appearance query), `resolveTool` in
+   `internal/caller` (covering `ps` and `lsof`), and `resolveOp` in
+   `internal/oprunner` (covering `op`). All accept only a
+   regular, executable, non-group/world-writable file at a compiled-in
+   absolute path. `caller` cannot import `prompt` — `main` composes
+   both — and the three candidate lists have no reason to move together.
+   PATH belongs to the process opx is prompting the user about, so a
+   helper found there is the caller choosing what answers its own
+   dialog — and a helper that exits 0 is indistinguishable from the user
+   clicking Allow. The same argument covers the identity tools: they
+   decide the name the dialog attributes the read to. Every
+   **identity-tool** invocation (`ps`, `lsof`) also runs with an explicit
+   minimal environment (`PATH=/bin:/usr/bin`, `LC_ALL=C`) rather than the
+   inherited one. `osascript` and `op` inherit opx's environment — `op`
+   necessarily, since it needs `OP_ACCOUNT` and its own config — so for
+   those two the absolute-path rule is the whole of the protection, not the
+   environment. Verified that this opens no split: with a forged `HOME`,
+   `op signout --all` exits non-zero, so `ForgetSession` fails closed, and
+   `ReadSecret` inherits the same environment and fails the same way. When
+   no trusted tool resolves, `caller` degrades to `"unknown"` or to an
+   omitted path line — the honest answer, and the only one available.
+   `op` is resolved **once at construction** and the path reused for both
+   `ReadSecret` and `ForgetSession`. That is a correctness requirement, not
+   an optimization: two lookups re-run the candidate scan, so a file
+   appearing at an earlier candidate between the calls could serve the
+   signout while the real `op` served the read — one biometric prompt paid,
+   session never invalidated. What this pins is the **path, not the
+   binary**: what sits at that path can still be swapped between the two
+   calls. That residual is knowingly left open — it needs write access to
+   an accepted absolute location, and an attacker holding that wins before
+   any race. A resolution failure is recorded on the
+   runner and returned by **both** methods, so in `opx run` it fails
+   closed through invariant 2's path and the child is not spawned.
+
+   **`resolveOp` does not inherit the other two screeners' safety
+   argument, and must not be documented as if it did.** `resolveHelper`
+   and `resolveTool` are safe partly because their real candidates live on
+   the SIP-sealed system volume, where no account can write. `op`'s usual
+   home is a Homebrew prefix owned by the invoking user (`/opt/homebrew/bin`
+   is `drwxrwxr-x`), so anything running as the user can replace it. What
+   `resolveOp` buys is narrower and is the whole of the finding: **the
+   caller's PATH no longer chooses** the binary. Injecting a PATH entry —
+   or dropping `node_modules/.bin/op`, which npm puts first on PATH for
+   every script it runs — is ephemeral, targeted, and invisible.
+   Overwriting the machine's real `op` is persistent, global, and already
+   total victory independent of opx.
+
+   The candidate list must stay **absolute and free of anything derived
+   from the environment**. `~/.local/bin/op` is a real install location and
+   was deliberately left out: there is no `~` at runtime, it comes from
+   `$HOME`, and `$HOME` is set by the same caller that sets `PATH` — a
+   HOME-derived candidate is a PATH allowlist wearing another variable's
+   name. The list is matched **before** symlink resolution, because
+   `/opt/homebrew/bin/op` is a symlink into a versioned Caskroom path, and
+   canonicalizing it would break the rule on every `op` upgrade.
+8. **`caller.RenderCommand`'s output is an authorization statement, not
+   a summary.** In `opx run` it is the only disclosure of which process
+   receives the plaintext secrets, so it keeps full paths and full
+   argument values, quotes anything whose boundaries would otherwise be
+   ambiguous, and states how many arguments it dropped rather than
+   trailing off. Do **not** merge it back into `renderAncestorArgv`
+   however similar they look: abbreviation is a readability win when
+   describing a process that already ran, and a lie when describing one
+   about to be handed secrets.
+9. **The caller path shown in the dialog comes from the kernel, never
+   from `ps`.** `caller.exePaths` reads the text vnode via
+   `lsof -F pfn -d txt`, for the whole ancestor chain in one call;
+   `internal/caller` must not display a path taken
+   from `ps -o comm=`. This is not a stylistic preference. Despite
+   printing what looks like a full path, macOS `ps` derives `comm` from
+   the process's **own arguments**: a binary at `/tmp/x` that execs
+   itself with `argv[0] = "/usr/local/bin/claude"` is reported by `ps` as
+   `/usr/local/bin/claude`. Verified directly — with a forged `argv[0]`,
+   `ps -o comm=` echoed the forgery while `lsof` reported the real path.
+   So a dialog sourcing its path from `ps` would let the caller name its
+   own location, which is exactly the finding the path was added to
+   close. `ps` is still used for the ppid walk and for the basename fed
+   to `isUninteresting` — both tolerate a self-asserted source; a
+   displayed path does not.
+   **Which** process gets named is a different property from **where**
+   it is shown to live, and only the second one is guaranteed. Subject
+   selection is best-effort and cannot be made otherwise: a real shell
+   is both a legitimate ancestor and a plausible attacker, so
+   `zsh evil.sh` launders attribution with no forgery anywhere and no
+   rule over executable identity can catch it. What is guaranteed
+   instead is: **the subject's path and every skipped ancestor's path
+   are kernel-true, and nothing between the subject and opx is silently
+   absorbed.** Three parts hold that up, and none is optional:
+
+   - `skippable` gates on **disagreement, not list membership**. An
+     ancestor is walked past only when `isUninteresting(comm)` *and*
+     the kernel either agrees (`basename(exe)` equals `comm`) or says
+     nothing. Reverting it to a bare list lookup reopens the pure
+     `argv[0]`-forgery case. Note the asymmetry: an unreadable path
+     skips, because `login` runs as uid 0 and returns no txt vnode, and
+     "unconfirmed ⇒ interesting" would make every bare-terminal read
+     say `"login" wants to read`.
+   - `Identity.Through` **discloses what was walked past**, at kernel
+     paths, nearest-to-opx last, with an unreadable ancestor rendered
+     as `unknown` rather than omitted — omission is the whole
+     mechanism of laundering. It is wired into **both** input modes;
+     in `opx run` the detail line is spent on the child, so this line
+     and the header are the entire account of who asked.
+   - Entries under SIP-sealed prefixes are **suppressed** from that
+     line, so the ordinary case stays quiet and the line keeps meaning
+     something when it does appear. This is not the location allowlist
+     rejected below: SIP paths are the locations an attacker cannot
+     occupy, so suppressing exactly those is a fact about the platform.
+     It does hide `zsh evil.sh`. Substituting the skipped shell's argv
+     was considered and rejected — argv is self-asserted, and putting
+     it on this line would make some entries believable and others not,
+     destroying the property that makes the line worth reading.
+
+   Additions to `uninteresting` widen what can be laundered through;
+   treat them as a security change, not a display-list tidy.
+
+   Separately, **opx does not classify the path** as expected or
+   suspicious: a location allowlist fires on real callers (Claude Code
+   installs under `~/.local/share`, npm under `~/.npm-global`, cargo
+   under `~/.cargo/bin`), and a marker that cries wolf on the ordinary
+   case trains the user to click through it.
+
+   One operational detail that is easy to "clean up" into a bug: the
+   batched `lsof` call **ignores its exit status on purpose**. Verified
+   on macOS 26.4 — lsof exits 1, silently, when any requested pid
+   yields no match, while still printing complete sections for the ones
+   it resolved. A root-owned `login` anywhere in range is enough, so
+   treating non-zero as failure discards every path in the chain in the
+   common case.
 
 If a change appears to remove or weaken any of these, call it out
 explicitly in the PR description rather than burying it in a refactor.
 
+Invariants 6 and 8 have each already needed a follow-up fix after the
+original change merged — a missed interpolation site, and a display
+quoter that escaped `"` but not `\`, letting an argument forge its own
+closing quote. Both were believed held by the author and caught by
+someone reading the merged code. Escaping and quoting are where this
+codebase's reviews have actually failed; weight them accordingly.
+
 ## Things to avoid
 
 - Adding flags or features beyond what the task asks for. The CLI is
-  deliberately small: two input modes (single positional URI and
-  repeatable `--env NAME=op://...` pairs), three exit codes.
+  deliberately small: three input modes (single positional URI;
+  repeatable `--env NAME=op://...` pairs; `opx run` with `--env-file`
+  / `--env` feeding a child command), four exit codes.
 - Adding nicknames, allowlists, config files, or any other indirection
   between the user-typed `op://` URI and the read. `opx` was scoped down
   to a pure security boundary around `op`; convenience layers were
@@ -120,12 +401,32 @@ explicitly in the PR description rather than burying it in a refactor.
   approval, it does not store or alias anything.
 - Adding a non-strict / "skip signout" mode. The forced session
   invalidation is the entire reason this tool exists.
+- Making the confirm dialog's `beep` configurable. A switch was considered
+  and rejected: the beep is tamper evidence — it makes an access attempt
+  audible when the dialog opens unseen and would otherwise absorb a silent
+  60-second timeout — and any opx-level switch, env var or config file,
+  would be readable and writable by the very process opx is gating. macOS's
+  System Settings › Sound is the configuration surface. A caller can reach
+  that too, but only by muting the machine globally and persistently, which
+  is the difference that matters. See `dialogScript` in `internal/prompt`.
+- Reintroducing `exec.LookPath`, or a bare command name, for any
+  security-critical helper. See invariant 7 — the lookup itself is the
+  vulnerability, not just what the helper does afterwards.
+- Reaching for `internal/shellquote` to quote something for **display**.
+  It exists for `eval` consumption: it always wraps in single quotes
+  (noise in a dialog) and passes control bytes through unchanged, since
+  nothing expands inside single quotes. Display quoting is a different
+  problem — see `quoteForDisplay` in `internal/caller`, and the two
+  commits that got it wrong before touching it.
 - Adding logging frameworks, config loaders, or CLI parsing libraries.
 - Introducing cgo (breaks `make cross`).
 - Caching the `op` session — that is exactly what this tool exists to
   prevent.
 - Editing `.gitignore` to allowlist build artifacts; the repo intentionally
-  ignores all `opx*` binaries and `*.test`.
+  ignores the root-level binaries (`/opx`, `/opx-*`) and `*.test`. The
+  anchoring and the glob are both load-bearing — see the comment in the
+  file. Narrowing `/opx-*` back to a list of exact names is what let a
+  9.3 MB binary into a PR.
 
 ## Branching
 

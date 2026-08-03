@@ -9,6 +9,7 @@
 //
 //	opx <op://uri>
 //	opx --env NAME=<op://uri> [--env NAME=<op://uri> ...]
+//	opx run [--env-file=PATH ...] [--env NAME=<op://uri> ...] [--] CMD [ARGS...]
 package main
 
 import (
@@ -20,13 +21,17 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/bestdan/opx/internal/caller"
+	"github.com/bestdan/opx/internal/envfile"
 	"github.com/bestdan/opx/internal/oprunner"
 	"github.com/bestdan/opx/internal/prompt"
 	"github.com/bestdan/opx/internal/shellquote"
+	"github.com/bestdan/opx/internal/spawn"
 	"github.com/bestdan/opx/internal/uri"
 )
 
@@ -50,7 +55,7 @@ var version = "dev"
 
 // diag is the destination for diagnostic stderr output. It defaults to
 // io.Discard (silent) and is flipped to os.Stderr when --verbose / OPX_VERBOSE
-// is set. Subprocess stderr (op, osascript, zenity) and our own logging both
+// is set. Subprocess stderr (op, osascript) and our own logging both
 // route through this writer. main() is the only place that mutates it.
 //
 // Set-once-in-main, then read-only for the rest of execution — no races.
@@ -60,6 +65,22 @@ var diag io.Writer = io.Discard
 // diag is io.Discard.
 func diagf(format string, a ...any) { fmt.Fprintf(diag, format, a...) }
 
+// forgetOnce wraps a Runner so ForgetSession runs at most once per process.
+// Several exit paths call it (readAndForget, runSubcommand's pre-spawn
+// fail-closed call, and main's catch-all); the guard keeps the first call
+// authoritative and makes the rest no-ops, so `op signout` never runs twice
+// and the first call's error is what every caller observes.
+type forgetOnce struct {
+	oprunner.Runner
+	once sync.Once
+	err  error
+}
+
+func (f *forgetOnce) ForgetSession() error {
+	f.once.Do(func() { f.err = f.Runner.ForgetSession() })
+	return f.err
+}
+
 // envNameRE matches POSIX-portable shell variable names.
 var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -68,12 +89,27 @@ func main() {
 		printVersion(os.Stdout, os.Stderr, parseVersion(version), wantCheck(os.Args[1:]))
 		os.Exit(exitSuccess)
 	}
+	// opx is macOS-only: the confirmation dialog is an AppleScript dialog and
+	// the caller lookup shells out to macOS `ps`. Say so plainly rather than
+	// letting the missing osascript surface as "access denied by user", which
+	// reads as a decision the user made.
+	//
+	// exitOpFail, not exitUsage: a bare `opx` exiting 2 is the documented
+	// install-success signal (README's verify step and the 1password-onboard
+	// runbook both read "usage message, exit 2" as "opx is ready"). Exiting 2
+	// here would hand that same all-clear to a Linux box where opx cannot
+	// work — the very masquerade this guard exists to prevent.
+	if runtime.GOOS != "darwin" {
+		fmt.Fprintf(os.Stderr, "opx: unsupported platform %q — opx runs on macOS only\n", runtime.GOOS)
+		os.Exit(exitOpFail)
+	}
 	verbose, args := extractVerbose(os.Args[1:])
 	if verbose {
 		diag = os.Stderr
 	}
-	runner := oprunner.NewWithStderr(diag)
+	runner := &forgetOnce{Runner: oprunner.NewWithStderr(diag)}
 	confirmer := prompt.NewWithStderr(diag)
+	spawner := spawn.New()
 
 	// Recover from panics so the session forget still runs. Panic output
 	// always goes to os.Stderr (not diag) — a panic is an invariant
@@ -87,7 +123,14 @@ func main() {
 			os.Exit(exitOpFail)
 		}
 	}()
-	os.Exit(run(args, runner, confirmer))
+	code := runWith(args, runner, confirmer, spawner)
+	// Catch-all: the read paths forget on their own, but the denial and
+	// usage-error paths return before reaching them. Unconditional here so no
+	// exit path can leave a usable op session behind.
+	if err := runner.ForgetSession(); err != nil {
+		diagf("warning: op signout failed: %v\n", err)
+	}
+	os.Exit(code)
 }
 
 // wantVersion reports whether --version / -V appears anywhere in args.
@@ -134,10 +177,21 @@ func extractVerbose(args []string) (verbose bool, rest []string) {
 
 // run is the main logic, separated from main() so it is testable.
 //
-// Usage output (parse errors, zero-args help) always prints to os.Stderr
-// regardless of verbosity — without it a new user has no signal that they
-// typoed a flag. Everything else routes through the diag writer.
+// Existing tests call run() with no spawner because they don't exercise the
+// `run` subcommand path. Tests that need to verify run-subcommand behavior
+// call runWith directly with a fake Spawner.
 func run(args []string, r oprunner.Runner, c prompt.Confirmer) int {
+	return runWith(args, r, c, spawn.New())
+}
+
+// runWith is run() with an injectable Spawner. Usage output (parse errors,
+// zero-args help) always prints to os.Stderr regardless of verbosity —
+// without it a new user has no signal that they typoed a flag. Everything
+// else routes through the diag writer.
+func runWith(args []string, r oprunner.Runner, c prompt.Confirmer, sp spawn.Spawner) int {
+	if len(args) > 0 && args[0] == "run" {
+		return runSubcommand(args[1:], r, c, sp)
+	}
 	bindings, envMode, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "usage error: %v\n", err)
@@ -233,23 +287,69 @@ func parseEnvPair(pair string) (prompt.Binding, error) {
 	return prompt.Binding{Name: name, URI: val}, nil
 }
 
+// originLine words the dialog's origin line for id, or returns "" when the
+// executable path is unknown so the line is omitted rather than shown empty.
+// An omitted line is the honest rendering of "the kernel would not tell us";
+// wording it as an unknown location would imply a check that did not happen.
+func originLine(id caller.Identity) string {
+	if id.Path == "" {
+		return ""
+	}
+	return "from " + id.Path
+}
+
+// throughLine words the dialog's disclosure of the ancestors the identity walk
+// passed over, or returns "" when there is nothing to disclose. The entries are
+// already ordered nearest-to-opx last and already filtered — see
+// caller.Identity.Through — so this only supplies the wording and the
+// separator, which is the same "›" the detail line uses for ancestry.
+func throughLine(id caller.Identity) string {
+	if len(id.Through) == 0 {
+		return ""
+	}
+	return "through " + strings.Join(id.Through, " › ")
+}
+
+// confirmFailed reports a Confirm error that is not a denial. It writes to
+// os.Stderr regardless of verbosity, for the same reason usage errors do: the
+// dialog never reached anyone, so quiet mode would leave the user with a bare
+// exit 1 and no way to tell it apart from `op` failing. A denial stays on the
+// diag writer — there the user already knows, having clicked Deny.
+//
+// It prints the error, which for prompt.ErrUndisplayable names a code point
+// and nothing else. Do not widen it to echo the offending string: this is
+// stderr, and reproducing caller-controlled text there is the terminal
+// version of the problem the dialog sanitizer exists to prevent.
+func confirmFailed(err error) {
+	fmt.Fprintf(os.Stderr, "cannot show the confirmation dialog: %v\n", err)
+}
+
 // confirmAndRead shows the confirmation dialog covering every binding and,
 // if approved, reads each secret atomically.
 func confirmAndRead(bindings []prompt.Binding, envMode bool, r oprunner.Runner, c prompt.Confirmer) int {
+	id := caller.Current()
 	req := prompt.Request{
 		Bindings: bindings,
-		Caller:   caller.Name(),
+		Caller:   id.Name,
+		// No separate origin line here: the detail line already renders the
+		// executable path as argv[0]. Run mode is the case that needs one —
+		// there the detail line describes the child instead.
+		CallerDetail: "via " + id.Detail,
+		// The through line, by contrast, is needed in both modes: the detail
+		// line describes the subject, and what the subject's ancestry omits is
+		// exactly what this discloses.
+		CallerThrough: throughLine(id),
 	}
 	if err := c.Confirm(req); err != nil {
 		// Denial / dialog timeout / no UI all collapse to ErrDenied — that's
-		// the user-intent path (exit 3). Anything else is treated as a tool
-		// failure (exit 1). Today only ErrDenied flows here, but the split
-		// makes the boundary explicit if Confirm grows new error modes.
+		// the user-intent path (exit 3). Anything else is a tool failure
+		// (exit 1): the dialog could not be put in front of anyone, so there
+		// is no user decision to report.
 		if errors.Is(err, prompt.ErrDenied) {
 			diagf("denied (%v)\n", err)
 			return exitDenied
 		}
-		diagf("confirm failed: %v\n", err)
+		confirmFailed(err)
 		return exitOpFail
 	}
 	return readAndForget(bindings, envMode, r)
@@ -334,15 +434,293 @@ func renderOutput(bindings []prompt.Binding, secrets [][]byte, envMode bool) []b
 		buf.WriteString("export ")
 		buf.WriteString(b.Name)
 		buf.WriteByte('=')
-		buf.Write(shellquote.Quote(secrets[i]))
+		// Same trailing-newline strip as buildChildEnv: shellquote preserves
+		// the newline inside the quotes, so without this `eval $(opx --env
+		// FOO=op://...)` sets FOO with op's newline still attached.
+		buf.Write(shellquote.Quote(bytes.TrimSuffix(secrets[i], []byte("\n"))))
 		buf.WriteString(";\n")
 	}
 	return buf.Bytes()
 }
 
+// runSubcommand implements `opx run`: a single-shot wrapper that resolves
+// op:// references from --env-file files and/or inline --env flags, exec's
+// the supplied command with those values in its environment, and forgets
+// the op session before the child starts.
+//
+// Security invariants preserved here:
+//   - Every op:// URI is validated before any user-visible prompt.
+//   - One Confirm call covers every op:// URI in the request.
+//   - ForgetSession runs on every exit path, before the child is spawned —
+//     the child must never inherit a usable op session.
+//   - Atomicity: if any read fails, the child is not spawned at all.
+//   - Secrets are never written to opx's stdout in run mode; they only
+//     reach the child via its environment.
+func runSubcommand(args []string, r oprunner.Runner, c prompt.Confirmer, sp spawn.Spawner) int {
+	bindings, literals, argv, err := parseRunArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "usage error: %v\n", err)
+		printUsage()
+		return exitUsage
+	}
+	if len(argv) == 0 {
+		fmt.Fprintln(os.Stderr, "usage error: opx run requires a command to execute")
+		printUsage()
+		return exitUsage
+	}
+
+	// Confirm covers every op:// URI in the request. If there are no op://
+	// references, skip the dialog — there is nothing to authorize, and
+	// `opx run --env-file=plain.env -- cmd` should behave like a thin
+	// dotenv loader. ForgetSession is still called so any leftover session
+	// from a prior `op` invocation is cleared.
+	if len(bindings) > 0 {
+		id := caller.Current()
+		req := prompt.Request{
+			Bindings: bindings,
+			Caller:   id.Name,
+			// The detail line below describes the child, so this is the only
+			// place the dialog says where the *requesting* process lives —
+			// the half of its identity it could not choose for itself.
+			CallerOrigin: originLine(id),
+			// And with the detail line spent on the child, this line and the
+			// header are the whole account of the requesting ancestry.
+			CallerThrough: throughLine(id),
+			CallerDetail:  "to run: " + caller.RenderCommand(argv),
+		}
+		if err := c.Confirm(req); err != nil {
+			if errors.Is(err, prompt.ErrDenied) {
+				diagf("denied (%v)\n", err)
+				return exitDenied
+			}
+			confirmFailed(err)
+			return exitOpFail
+		}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	secrets := make([][]byte, len(bindings))
+	var readErr error
+	for i, b := range bindings {
+		s, err := r.ReadSecret(ctx, b.URI)
+		if err != nil {
+			readErr = err
+			break
+		}
+		secrets[i] = s
+	}
+
+	// Forget the session before the child starts so the child never sees an
+	// active op session, regardless of whether reads succeeded.
+	forgetErr := r.ForgetSession()
+
+	if ctx.Err() != nil {
+		diagf("interrupted\n")
+		return exitOpFail
+	}
+	if readErr != nil {
+		diagf("read failed: %v\n", readErr)
+		return exitOpFail
+	}
+	// Fail closed. Unlike the single/--env modes — where opx is about to exit
+	// anyway — run mode hands control to a potentially long-lived child, so
+	// spawning after a failed signout would leave it holding a live op
+	// session. That is the one thing this tool exists to prevent.
+	if forgetErr != nil {
+		diagf("op signout failed, not spawning child: %v\n", forgetErr)
+		return exitOpFail
+	}
+
+	childEnv := buildChildEnv(os.Environ(), literals, bindings, secrets)
+	// Deliberately not the signal context: exec.CommandContext would SIGKILL
+	// the child on SIGINT/SIGTERM. The terminal already delivers those to the
+	// child via the foreground process group, so opx killing it too is both
+	// redundant and harsher — it pre-empts the child's own cleanup. opx waits
+	// and propagates the child's exit code instead.
+	code, err := sp.Spawn(context.Background(), argv, childEnv)
+	if err != nil {
+		diagf("spawn failed: %v\n", err)
+		return exitOpFail
+	}
+	return code
+}
+
+// parseRunArgs parses the `opx run` argument list.
+//
+// Recognised flags:
+//   - --env-file=PATH (or --env-file PATH): repeatable, parsed in order.
+//   - --env NAME=VALUE (or --env=NAME=VALUE): repeatable, takes precedence
+//     over file entries with the same NAME.
+//   - --: explicit end-of-flags marker. Optional; flag parsing also stops
+//     at the first non-flag token to match `op run` UX.
+//
+// The remaining tokens are returned as argv (the command + its arguments).
+//
+// Values that match an op:// URI become bindings (will be resolved); other
+// values are returned as literal pass-throughs. Later assignments to the
+// same NAME overwrite earlier ones, with inline --env winning over files.
+func parseRunArgs(args []string) (bindings []prompt.Binding, literals []envfile.Entry, argv []string, err error) {
+	type pending struct {
+		name   string
+		value  string
+		source string // "--env" or file path, for error messages
+		line   int
+		inline bool // came from --env rather than an --env-file
+	}
+	var ordered []pending
+	addEntry := func(name, value, source string, line int, inline bool) error {
+		if !envNameRE.MatchString(name) {
+			return fmt.Errorf("%s: %q is not a valid shell variable name", source, name)
+		}
+		ordered = append(ordered, pending{name: name, value: value, source: source, line: line, inline: inline})
+		return nil
+	}
+
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch {
+		case a == "--":
+			argv = append(argv, args[i+1:]...)
+			i = len(args)
+		case a == "--env-file":
+			if i+1 >= len(args) {
+				return nil, nil, nil, fmt.Errorf("--env-file requires a path")
+			}
+			i++
+			entries, perr := envfile.ParseFile(args[i])
+			if perr != nil {
+				return nil, nil, nil, perr
+			}
+			for _, e := range entries {
+				if aerr := addEntry(e.Name, e.Value, args[i], e.Line, false); aerr != nil {
+					return nil, nil, nil, aerr
+				}
+			}
+			i++
+		case strings.HasPrefix(a, "--env-file="):
+			path := strings.TrimPrefix(a, "--env-file=")
+			entries, perr := envfile.ParseFile(path)
+			if perr != nil {
+				return nil, nil, nil, perr
+			}
+			for _, e := range entries {
+				if aerr := addEntry(e.Name, e.Value, path, e.Line, false); aerr != nil {
+					return nil, nil, nil, aerr
+				}
+			}
+			i++
+		case a == "--env":
+			if i+1 >= len(args) {
+				return nil, nil, nil, fmt.Errorf("--env requires a NAME=VALUE argument")
+			}
+			i++
+			name, value, perr := splitEnvPair(args[i])
+			if perr != nil {
+				return nil, nil, nil, perr
+			}
+			if aerr := addEntry(name, value, "--env", 0, true); aerr != nil {
+				return nil, nil, nil, aerr
+			}
+			i++
+		case strings.HasPrefix(a, "--env="):
+			name, value, perr := splitEnvPair(strings.TrimPrefix(a, "--env="))
+			if perr != nil {
+				return nil, nil, nil, perr
+			}
+			if aerr := addEntry(name, value, "--env", 0, true); aerr != nil {
+				return nil, nil, nil, aerr
+			}
+			i++
+		case strings.HasPrefix(a, "-"):
+			return nil, nil, nil, fmt.Errorf("unknown flag %q", a)
+		default:
+			argv = append(argv, args[i:]...)
+			i = len(args)
+		}
+	}
+
+	// Inline --env beats --env-file unconditionally, regardless of the order
+	// the flags appear in; within each of those two layers, the last
+	// assignment to a name wins. Order-independence matters because the
+	// inline form is what a user reaches for to override a checked-in env
+	// file, and having that silently lose to a later --env-file would be a
+	// surprise in the direction of using the wrong secret.
+	latest := map[string]int{}
+	inlineSeen := map[string]bool{}
+	for idx, e := range ordered {
+		if inlineSeen[e.name] && !e.inline {
+			continue
+		}
+		latest[e.name] = idx
+		if e.inline {
+			inlineSeen[e.name] = true
+		}
+	}
+	for idx, e := range ordered {
+		if latest[e.name] != idx {
+			continue
+		}
+		if uri.IsOPURI(e.value) {
+			bindings = append(bindings, prompt.Binding{Name: e.name, URI: e.value})
+		} else {
+			// Reject obviously-malformed op:// URIs so a typo'd reference
+			// doesn't silently end up in the child as a literal string.
+			if strings.HasPrefix(e.value, "op://") {
+				return nil, nil, nil, fmt.Errorf("%s: %q is not a valid op:// URI", e.source, e.value)
+			}
+			literals = append(literals, envfile.Entry{Name: e.name, Value: e.value, Line: e.line})
+		}
+	}
+	return bindings, literals, argv, nil
+}
+
+// splitEnvPair splits "NAME=VALUE" without validating either half — the
+// caller decides whether the value needs to be a valid op:// URI.
+func splitEnvPair(pair string) (name, value string, err error) {
+	eq := strings.IndexByte(pair, '=')
+	if eq <= 0 {
+		return "", "", fmt.Errorf("--env: expected NAME=VALUE, got %q", pair)
+	}
+	return pair[:eq], pair[eq+1:], nil
+}
+
+// buildChildEnv layers the resolved values over the parent environment.
+// Order: parent env first (lowest priority), then literal pass-throughs,
+// then resolved secrets. Within each layer, the last assignment wins.
+func buildChildEnv(parent []string, literals []envfile.Entry, bindings []prompt.Binding, secrets [][]byte) []string {
+	env := map[string]string{}
+	for _, kv := range parent {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		env[kv[:eq]] = kv[eq+1:]
+	}
+	for _, e := range literals {
+		env[e.Name] = e.Value
+	}
+	for i, b := range bindings {
+		// `op read` terminates its output with a newline, which is invisible
+		// in `$(opx op://...)` (command substitution strips it) but very
+		// visible in an env var — a bearer token or connection string with a
+		// trailing newline is rejected by most consumers. Strip exactly one,
+		// so a multiline secret keeps its own final newline.
+		env[b.Name] = strings.TrimSuffix(string(secrets[i]), "\n")
+	}
+	out := make([]string, 0, len(env))
+	for k, v := range env {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage: opx [--verbose] <op://uri>")
 	fmt.Fprintln(os.Stderr, "       opx [--verbose] --env NAME=<op://uri> [--env NAME=<op://uri> ...]")
+	fmt.Fprintln(os.Stderr, "       opx [--verbose] run [--env-file=PATH ...] [--env NAME=<op://uri> ...] [--] CMD [ARGS...]")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  --verbose, -v    write diagnostics to stderr (default: silent)")
 	fmt.Fprintln(os.Stderr, "                   OPX_VERBOSE=1 in the environment is equivalent")

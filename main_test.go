@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/bestdan/opx/internal/caller"
 	"github.com/bestdan/opx/internal/oprunner"
 	"github.com/bestdan/opx/internal/prompt"
 )
@@ -166,6 +168,40 @@ func TestRun_InvalidURI(t *testing.T) {
 	}
 }
 
+// TestRun_ControlLadenURINeverPrompts is the point of validating before
+// confirming: a URI carrying terminal escapes is a usage error, and the dialog
+// is never drawn. Asserting the exit code alone would pass even if the prompt
+// had been shown first, so the Confirm count is the real assertion here — the
+// dialog is the trust boundary, and drawing one whose body the caller wrote is
+// the failure this rejects.
+func TestRun_ControlLadenURINeverPrompts(t *testing.T) {
+	cases := []struct {
+		name string
+		uri  string
+	}{
+		{"CR", "op://V/I/f\rop://decoy/I/f"},
+		{"ESC", "op://V/I/f\x1b[2K"},
+		{"invalid UTF-8", "op://V/I/f" + string([]byte{0x9b})},
+		{"over the length cap", "op://V/I/" + strings.Repeat("f", 1100)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeRunner{}
+			fc := allow()
+			code := captureStdoutCode(t, func() int { return run([]string{tc.uri}, fr, fc) })
+			if code != exitUsage {
+				t.Errorf("exit code = %d, want %d", code, exitUsage)
+			}
+			if fc.calls != 0 {
+				t.Errorf("Confirm called %d times, want 0 — validation must reject before any prompt is drawn", fc.calls)
+			}
+			if len(fr.readCalls) != 0 {
+				t.Errorf("ReadSecret called %d times, want 0", len(fr.readCalls))
+			}
+		})
+	}
+}
+
 func TestRun_ForgetCalledOnReadError(t *testing.T) {
 	fr := &fakeRunner{readErr: errors.New("biometric failed")}
 	code := run([]string{"op://V/I/f"}, fr, allow())
@@ -218,6 +254,170 @@ func captureStdoutCode(t *testing.T, fn func() int) int {
 	return code
 }
 
+// --- forgetOnce ---
+
+func TestForgetOnce_SecondCallIsNoOpReturnsFirstError(t *testing.T) {
+	fr := &fakeRunner{forgetErr: errors.New("signout failed")}
+	fo := &forgetOnce{Runner: fr}
+
+	err1 := fo.ForgetSession()
+	err2 := fo.ForgetSession()
+
+	if !errors.Is(err1, err2) && err1 != err2 {
+		t.Errorf("second call returned different error: first=%v second=%v", err1, err2)
+	}
+	if err1 == nil || err1.Error() != "signout failed" {
+		t.Errorf("first call error = %v, want %q", err1, "signout failed")
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("underlying Runner.ForgetSession called %d times, want 1", fr.forgetCalled)
+	}
+}
+
+// mainCatchAll mirrors main()'s post-runWith catch-all: wrap the fake runner
+// in forgetOnce and call ForgetSession after runWith, exactly as main() does
+// after os.Exit(runWith(...)) would otherwise skip it.
+func mainCatchAll(fr *fakeRunner, fn func(r oprunner.Runner) int) (code int, forgetErr error) {
+	fo := &forgetOnce{Runner: fr}
+	code = fn(fo)
+	forgetErr = fo.ForgetSession()
+	return code, forgetErr
+}
+
+// TestRun_UndisplayableRequestIsNotReportedAsDenial pins the exit-code half of
+// the fix. prompt.ErrUndisplayable means the dialog was never drawn, so there
+// was no user to deny anything: exit 1 (the tool could not do its job), not
+// exit 3 (the user said no). It still fails closed — nothing is read.
+//
+// Both modes are covered because the two Confirm call sites make this decision
+// separately; the earlier reading of them as one is how #19's gap survived.
+func TestRun_UndisplayableRequestIsNotReportedAsDenial(t *testing.T) {
+	undisplayable := &fakeConfirmer{err: fmt.Errorf("%w: U+202E", prompt.ErrUndisplayable)}
+
+	t.Run("single", func(t *testing.T) {
+		fr := &fakeRunner{}
+		code := run([]string{"op://V/I/f"}, fr, undisplayable)
+		if code != exitOpFail {
+			t.Errorf("exit code = %d, want %d (exitDenied would blame the user for a "+
+				"dialog that was never shown)", code, exitOpFail)
+		}
+		if len(fr.readCalls) != 0 {
+			t.Errorf("read ran %d times despite an unshown dialog, want 0", len(fr.readCalls))
+		}
+	})
+
+	t.Run("run mode", func(t *testing.T) {
+		fr := &fakeRunner{}
+		fs := &fakeSpawner{}
+		code := runWith([]string{"run", "--env", "A=op://V/A/f", "--", "true"}, fr, undisplayable, fs)
+		if code != exitOpFail {
+			t.Errorf("exit code = %d, want %d", code, exitOpFail)
+		}
+		if fs.called != 0 {
+			t.Errorf("child spawned %d times despite an unshown dialog, want 0", fs.called)
+		}
+	})
+}
+
+func TestMainCatchAll_DeniedSingle_ForgetsOnce(t *testing.T) {
+	fr := &fakeRunner{}
+	code, _ := mainCatchAll(fr, func(r oprunner.Runner) int {
+		return run([]string{"op://V/I/f"}, r, deny())
+	})
+	if code != exitDenied {
+		t.Errorf("exit code = %d, want %d", code, exitDenied)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want 1", fr.forgetCalled)
+	}
+}
+
+func TestMainCatchAll_DeniedEnv_ForgetsOnce(t *testing.T) {
+	fr := &fakeRunner{}
+	code, _ := mainCatchAll(fr, func(r oprunner.Runner) int {
+		return run([]string{"--env", "A=op://V/A/f"}, r, deny())
+	})
+	if code != exitDenied {
+		t.Errorf("exit code = %d, want %d", code, exitDenied)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want 1", fr.forgetCalled)
+	}
+}
+
+func TestMainCatchAll_DeniedRun_ForgetsOnceNoSpawn(t *testing.T) {
+	dir := t.TempDir()
+	envPath := dir + "/.env"
+	if err := os.WriteFile(envPath, []byte("A=op://V/A/f\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	fr := &fakeRunner{}
+	fs := &fakeSpawner{}
+	code, _ := mainCatchAll(fr, func(r oprunner.Runner) int {
+		return runWith([]string{"run", "--env-file=" + envPath, "--", "echo", "hi"}, r, deny(), fs)
+	})
+	if code != exitDenied {
+		t.Errorf("exit code = %d, want %d", code, exitDenied)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want 1", fr.forgetCalled)
+	}
+	if fs.called != 0 {
+		t.Error("spawner should not have been called after denial")
+	}
+}
+
+func TestMainCatchAll_UsageError_ForgetsOnce(t *testing.T) {
+	fr := &fakeRunner{}
+	code, _ := mainCatchAll(fr, func(r oprunner.Runner) int {
+		return run([]string{"--badflag"}, r, allow())
+	})
+	if code != exitUsage {
+		t.Errorf("exit code = %d, want %d", code, exitUsage)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want 1 (usage errors now sign out too)", fr.forgetCalled)
+	}
+}
+
+func TestMainCatchAll_SuccessfulSingleRead_ForgetsExactlyOnce(t *testing.T) {
+	fr := &fakeRunner{secret: []byte("s")}
+	var code int
+	_ = captureStdout(t, func() {
+		code, _ = mainCatchAll(fr, func(r oprunner.Runner) int {
+			return run([]string{"op://V/I/f"}, r, allow())
+		})
+	})
+	if code != exitSuccess {
+		t.Errorf("exit code = %d, want %d", code, exitSuccess)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want exactly 1 (guards against catch-all double-signout)", fr.forgetCalled)
+	}
+}
+
+func TestMainCatchAll_SuccessfulRun_ForgetsExactlyOnceBeforeSpawn(t *testing.T) {
+	dir := t.TempDir()
+	envPath := dir + "/.env"
+	if err := os.WriteFile(envPath, []byte("A=op://V/A/f\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	fr := &fakeRunner{secrets: map[string][]byte{"op://V/A/f": []byte("alpha")}}
+	fs := &fakeSpawner{}
+	code, _ := mainCatchAll(fr, func(r oprunner.Runner) int {
+		return runWith([]string{"run", "--env-file=" + envPath, "--", "echo", "hi"}, r, allow(), fs)
+	})
+	if code != exitSuccess {
+		t.Errorf("exit code = %d, want %d", code, exitSuccess)
+	}
+	if fr.forgetCalled != 1 {
+		t.Errorf("ForgetSession called %d times, want exactly 1", fr.forgetCalled)
+	}
+	if fs.called == 0 {
+		t.Error("spawner should have been called on success")
+	}
+}
+
 func TestRun_ConfirmDeny_NoOpRead(t *testing.T) {
 	// When the user denies the dialog, op should never be called and the exit
 	// code must be exitDenied (distinct from exitOpFail so callers can
@@ -248,6 +448,19 @@ func TestRun_ConfirmCalledWithCorrectURI(t *testing.T) {
 	}
 	if fc.lastRequest.Bindings[0].Name != "" {
 		t.Errorf("legacy mode binding name = %q, want empty", fc.lastRequest.Bindings[0].Name)
+	}
+}
+
+// TestRun_ConfirmThroughDisclosesSkippedAncestry is the single-URI half of the
+// same wiring run_subcommand_test.go checks for run mode. The through line has
+// to be set in both modes: the detail line describes the subject, and what the
+// subject's own description leaves out is exactly what this discloses.
+func TestRun_ConfirmThroughDisclosesSkippedAncestry(t *testing.T) {
+	fr := &fakeRunner{secret: []byte("val")}
+	fc := allow()
+	_ = captureStdoutCode(t, func() int { return run([]string{"op://V/I/f"}, fr, fc) })
+	if want := throughLine(caller.Current()); fc.lastRequest.CallerThrough != want {
+		t.Errorf("CallerThrough = %q, want %q", fc.lastRequest.CallerThrough, want)
 	}
 }
 
@@ -537,5 +750,33 @@ func TestWantVersion(t *testing.T) {
 				t.Errorf("wantVersion(%v) = %v, want %v", tc.args, got, tc.want)
 			}
 		})
+	}
+}
+
+// `op read` newline-terminates its output. shellquote preserves that newline
+// inside the quotes, so without a strip `eval $(opx --env FOO=op://...)`
+// exports FOO with op's newline still attached.
+func TestRun_EnvStripsOpReadTrailingNewline(t *testing.T) {
+	fr := &fakeRunner{secrets: map[string][]byte{"op://V/A/f": []byte("sk-abc123\n")}}
+	out := captureStdout(t, func() {
+		if code := run([]string{"--env", "TOKEN=op://V/A/f"}, fr, allow()); code != exitSuccess {
+			t.Errorf("exit code = %d, want %d", code, exitSuccess)
+		}
+	})
+	if want := "export TOKEN='sk-abc123';\n"; out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+}
+
+// Only op's own trailing newline goes — a multiline secret keeps its final one.
+func TestRun_EnvKeepsMultilineSecretFinalNewline(t *testing.T) {
+	fr := &fakeRunner{secrets: map[string][]byte{"op://V/A/f": []byte("line1\nline2\n\n")}}
+	out := captureStdout(t, func() {
+		if code := run([]string{"--env", "KEY=op://V/A/f"}, fr, allow()); code != exitSuccess {
+			t.Errorf("exit code = %d, want %d", code, exitSuccess)
+		}
+	})
+	if want := "export KEY='line1\nline2\n';\n"; out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
 	}
 }

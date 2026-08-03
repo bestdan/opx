@@ -4,6 +4,10 @@ A defensive wrapper around the 1Password CLI (`op`) that forces a fresh
 biometric prompt on every secret read and tears down the `op` session token
 immediately after.
 
+**macOS only.** `opx` is built and supported on macOS; the confirmation
+dialog is a native AppleScript dialog and the tool is not tested anywhere
+else.
+
 ## Why
 
 The `op` CLI caches a session token after a successful biometric unlock, so a
@@ -14,7 +18,7 @@ a window in which it can read arbitrary secrets without your knowledge.
 
 `opx` closes that window:
 
-1. Show a platform-native confirmation dialog disclosing **which URI** is
+1. Show a native macOS confirmation dialog disclosing **which URI** is
    being requested and **which process** is asking.
 2. Run `op read <uri>`, which triggers a fresh biometric prompt.
 3. On exit — success, failure, panic, or `SIGINT`/`SIGTERM` — run
@@ -23,10 +27,50 @@ a window in which it can read arbitrary secrets without your knowledge.
 The result: every secret read is explicitly authorized by you, and no
 residual session is left behind for another process to abuse.
 
+### What this does and does not defend against
+
+The dialog is the whole trust boundary, so it matters what can influence it.
+The calling process is the adversary here — it chooses the URI, the child
+command, and the environment `opx` inherits.
+
+**Defended:**
+
+- Text the caller controls — the URI, the bound variable name, the process
+  name — cannot inject terminal or AppleScript control sequences to repaint
+  or forge the dialog.
+- In `opx run`, the dialog names the child that will receive the secrets
+  exactly as you wrote it, never shortened to a bare program name, with its
+  arguments quoted and unshortened up to a bounded width. Anything past that
+  width is disclosed as a count of omitted arguments rather than silently
+  dropped, so the destination cannot be hidden by padding the command line.
+- Every helper `opx` runs is located at a fixed absolute path rather than
+  through `PATH`: the dialog helper (`osascript`), the two tools that
+  identify the calling process (`ps`, `lsof`), and `op` itself. A binary
+  planted earlier on `PATH` cannot stand in for any of them — it cannot
+  approve the request in place of the dialog, name a program you trust in
+  place of the real caller, or pretend to end the session while leaving it
+  live. (The child command in `opx run` is the one you typed, and is
+  resolved the way your shell would resolve it.)
+
+**Not defended, today:**
+
+- `opx` trusts your `op` install. Fixing the location `op` is loaded from
+  does not make the binary there genuine: `op` normally lives in a Homebrew
+  prefix your own account owns, so anything already running as you can
+  replace it. That is a bigger compromise than `opx` is scoped to survive,
+  and it defeats every `op read` you run, not just the ones through `opx`.
+- An attacker who can already write to a directory like `/usr/local/bin`, or
+  edit your shell profile, is outside what `opx` can reach. It hardens a
+  specific, cheap, ambient vector; it is not a defense against a fully
+  compromised account.
+- The confirmation is only as good as your reading of it. `opx` makes the
+  request legible — it cannot make an approval considered.
+
 ## Installation
 
 Prerequisites:
 
+- **macOS.** `opx` is macOS-only.
 - **Go 1.24 or newer.** Check with `go version`. If missing, install from
   [go.dev/dl](https://go.dev/dl/) or via Homebrew (`brew install go`).
 - **The 1Password CLI (`op`).** Check with `op --version`. If missing,
@@ -68,7 +112,7 @@ Step by step:
    source ~/.zshrc
    ```
 
-4. **(macOS only) Clear the quarantine attribute** so Gatekeeper doesn't
+4. **Clear the quarantine attribute** so Gatekeeper doesn't
    block the unsigned binary on first run:
 
    ```sh
@@ -124,28 +168,127 @@ interruptions (one approval per batch). The user still types every URI
 and every variable name themselves, so a malicious caller can't sneak
 extra reads in.
 
+### `opx run` — wrap a command with secrets from an env file
+
+If you already keep secrets in a dotenv-style file, `opx run` reads it,
+resolves any `op://` references with a single biometric approval, and
+exec's your command with those values in its environment — the same
+shape as `op run`, but with opx's per-call dialog and forced session
+teardown:
+
+```sh
+# .env.secrets
+SUPABASE_URL=op://finplan/Supabase/website
+SUPABASE_SERVICE_ROLE_KEY=op://finplan/Supabase/service_role_key
+LOG_LEVEL=info        # non-op:// values pass through verbatim
+```
+
+```sh
+opx run --env-file=.env.secrets -- uv run pytest
+```
+
+Flags:
+
+- `--env-file=PATH` — repeatable. Lines are `NAME=VALUE`; blank lines
+  and `#` comments are ignored; matching surrounding quotes are
+  stripped. A leading `export ` is tolerated.
+- `--env NAME=VALUE` — repeatable. Same shape as the top-level batch
+  mode and overrides any same-named entry from a file.
+- `--` — optional separator; flag parsing also stops at the first
+  non-flag token, matching `op run`'s UX.
+
+Behavior:
+
+- One confirmation dialog covers every `op://` URI in the request.
+- The `op` session is forgotten **before** the child is spawned, so the
+  child never inherits a usable session. If that signout fails, the
+  child is not spawned at all.
+- Secrets are stripped of the trailing newline `op read` emits, so a
+  token or connection string arrives in the child's environment exactly
+  as stored.
+- `Ctrl-C` reaches the child directly; opx does not kill it, so a child
+  that traps `SIGINT` can finish its own cleanup.
+- Reads are atomic: if any URI fails to resolve, the child is not
+  spawned and nothing is written.
+- Secrets reach the child only via its environment — they are never
+  printed to opx's stdout in run mode.
+- The child's exit code is propagated.
+
 ### Exit codes
 
-| Code | Meaning                                             |
-|------|-----------------------------------------------------|
-| 0    | Secret printed to stdout                            |
-| 1    | `op` failed, user denied the prompt, or interrupted |
-| 2    | Usage error (no args, malformed URI)                |
+| Code | Meaning                                                        |
+|------|----------------------------------------------------------------|
+| 0    | Secret printed to stdout                                       |
+| 1    | `op` failed, the read was interrupted, the dialog could not be shown, or not macOS |
+| 2    | Usage error (no args, malformed URI)                           |
+| 3    | Denied — dialog dismissed, timed out, or no GUI                |
 
-All non-usage failures collapse to exit 1 by design: callers should treat
-them identically (no secret on stdout) and read `stderr` for the reason.
+Exit 3 is the user-intent path; every other failure collapses to exit 1.
+In all non-zero cases nothing reaches stdout — read `stderr` for the reason.
 
 ## Common gotchas
 
 - **`op` not on `PATH`.** `opx` shells out to `op`; if it isn't installed
   the read fails with an exec error. Install the 1Password CLI separately.
-- **No GUI prompt available.** On macOS `opx` requires `osascript`
-  (preinstalled). On Linux it tries `zenity` first and falls back to a
-  `/dev/tty` y/N prompt — if there is no TTY (e.g. a daemonized cron job)
-  the request is denied. Run `opx` interactively.
+- **No GUI prompt available.** `opx` requires `osascript` (preinstalled on
+  macOS) to show the dialog. If it can't run — a daemonized job with no
+  window server, for instance — the request is denied by design. Run `opx`
+  interactively.
+- **`op://` references are ASCII-only — that is `op`'s rule, not `opx`'s.**
+  The 1Password CLI's own reference parser rejects every non-ASCII
+  character in a vault, item, or field name (`Café`, `日本`, an emoji, a
+  non-breaking space), so an item with a unicode name cannot be read by
+  name — use its item ID, which is ASCII. `opx` deliberately does not
+  duplicate that rule: it passes the URI through and lets `op`'s error
+  name the offending character. Run with `--verbose` to see it.
+- **A few invisible characters anywhere in the dialog are refused, not
+  shown.** Directional formatting characters (bidi overrides and marks)
+  and the Unicode line/paragraph separators can re-order or break the
+  text around them, which would let the dialog misrepresent what you are
+  approving. `opx` refuses to draw a dialog containing one: it exits 1
+  and says which code point on stderr, rather than showing you something
+  it can't vouch for. Every other invisible character — a zero-width
+  joiner, the non-breaking space macOS types on option-space — is shown
+  as an escape like `\u200d`. This applies to the whole dialog, not just
+  the URI: the calling program's path and, in `opx run`, the command you
+  typed are shown there too.
+- **The prompt beeps three times, and there is no setting to stop it.** The
+  dialog plays your system alert sound so an access attempt is audible when it
+  opens on another Space or behind a fullscreen window; the triple is what
+  makes it recognizably `opx` rather than any other alert. Volume and sound
+  choice come from System Settings › Sound — deliberately, because silencing
+  it there is global, persistent, and something you would notice, where a
+  per-invocation `OPX_SOUND=0` would not be. The beep is tamper evidence, not
+  a security control in itself: a determined caller can still mute the
+  machine, and hearing nothing is never proof nothing was read.
 - **macOS Gatekeeper.** A locally built `opx` binary is unsigned; the
   first run from Finder will be blocked. Either run it from a terminal or
   remove the quarantine attribute: `xattr -d com.apple.quarantine ./opx`.
+
+## Claude Code skills
+
+This repo doubles as a Claude Code plugin. Four skills under [`skills/`](skills/)
+cover the workflows around the binary — auditing a project's secret
+hygiene, scaffolding a vault, migrating a plaintext `.env`, and onboarding
+a developer. They recommend `opx` for interactive reads and `op run` for
+launching apps, and share a background doc,
+[`1password-local-dev-best-practices.md`](skills/1password-audit/1password-local-dev-best-practices.md).
+
+| Skill | What it does |
+|---|---|
+| `/1password-audit [path]` | Reports on hardcoded secrets, gitignore coverage, `op run` in dev scripts, `--account` safety, `detect-secrets`, and raw `op read` that should be `opx` |
+| `/1password-scaffold <name> [service\|team\|ai-agent] [account]` | Generates vault creation, service account scoping, `.env.secrets`, and `.gitignore` setup |
+| `/1password-migrate [path] [account]` | Maps an existing `.env` to `op://` references and produces the migration runbook |
+| `/1password-onboard [path] [account]` | Discovers required vaults and produces an install / sign-in / access-request runbook |
+
+All four are read-only: they print a runbook, they do not write files.
+
+Install:
+
+```sh
+claude plugin marketplace add bestdan/opx
+claude plugin install opx@opx
+```
 
 ## Contributing
 
