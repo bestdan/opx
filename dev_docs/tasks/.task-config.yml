@@ -1,0 +1,4 @@
+handler: gh-issue
+gh-issue:
+  repo: bestdan/opx
+  labels: [task-add]
