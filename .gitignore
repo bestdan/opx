@@ -21,3 +21,10 @@
 go.work
 go.work.sum
 
+# The per-clone task-handler override written alongside the committed
+# `.task-config.yml`. Ignored here rather than in each clone's
+# `.git/info/exclude` because it is the documented home for an API token, and
+# an exclude protects only the machine it was run on — every other clone would
+# be one `git add -A` from publishing the secret.
+dev_docs/tasks/.task-config.local.yml
+
