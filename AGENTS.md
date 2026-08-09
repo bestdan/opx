@@ -427,6 +427,16 @@ codebase's reviews have actually failed; weight them accordingly.
   anchoring and the glob are both load-bearing — see the comment in the
   file. Narrowing `/opx-*` back to a list of exact names is what let a
   9.3 MB binary into a PR.
+- Putting a personal or machine-local ignore in `.gitignore`. That file is
+  committed, so every entry asserts something *everyone* should ignore —
+  which is why it holds build outputs the Makefile produces and little
+  else. An ignore that is yours alone (an editor's scratch directory, a
+  local `.task-config.local.yml`, a `scratch.py`) belongs in
+  `.git/info/exclude`, which is per-clone and never committed. The test is
+  whether a teammate's checkout would produce the file: if it wouldn't,
+  `.gitignore` is the wrong place for it. The converse is also a mistake —
+  reaching for `.git/info/exclude` to hide something the build really does
+  generate for everyone leaves the next clone tripping over it.
 
 ## Branching
 
