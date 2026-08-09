@@ -427,6 +427,18 @@ codebase's reviews have actually failed; weight them accordingly.
   anchoring and the glob are both load-bearing — see the comment in the
   file. Narrowing `/opx-*` back to a list of exact names is what let a
   9.3 MB binary into a PR.
+- Putting a personal or machine-local ignore in `.gitignore`. That file is
+  committed, so every entry asserts something *everyone* should ignore —
+  which is why it holds build outputs, the `go.work` files, and
+  `dev_docs/tasks/.task-config.local.yml` — the per-clone task-handler
+  override, which is the documented home for an API token. An ignore that
+  is yours alone (an editor's scratch directory, one tool's history files,
+  a `scratch.py`) belongs in `.git/info/exclude`, which is per-clone and
+  never committed. Two questions decide it, and one `yes` is enough:
+  could the same path show up in a teammate's checkout, and would
+  committing it hurt? The converse is the mistake that bites hardest —
+  `.git/info/exclude` on a file that must never be committed from *any*
+  clone protects only the machine you ran it on.
 
 ## Branching
 
