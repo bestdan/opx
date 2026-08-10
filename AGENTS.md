@@ -409,6 +409,21 @@ codebase's reviews have actually failed; weight them accordingly.
   System Settings › Sound is the configuration surface. A caller can reach
   that too, but only by muting the machine globally and persistently, which
   is the difference that matters. See `dialogScript` in `internal/prompt`.
+- Putting a broker or daemon between the caller and `op` — a long-lived
+  process holding the only `op` relationship, with `opx` reduced to a thin
+  client. Considered 2026-08 as the one shape that lets an agent sandbox
+  admit `opx` while keeping raw `op` blocked (see the README's
+  "Not defended, today"), and rejected. Measured against simply leaving the
+  socket blocked and escalating out of the sandbox per read, it buys
+  ergonomics rather than a new security property: the biometric prompt is
+  the real gate either way. Worse, the prompt fatigue it would create has no
+  answer that isn't the `op` session cache under a new name — a scoped grant
+  for "this URI, this task, N minutes" is the thing this tool exists to
+  prevent. It also adds a protocol and a version-skew surface a static
+  binary does not have. What would reopen it: out-of-process caller identity
+  — a broker can read the peer pid off its own socket, which is a stronger
+  claim than the in-process ancestry walk invariant 9 has to settle for —
+  *plus* evidence that the blocked-socket posture is failing in practice.
 - Reintroducing `exec.LookPath`, or a bare command name, for any
   security-critical helper. See invariant 7 — the lookup itself is the
   vulnerability, not just what the helper does afterwards.
