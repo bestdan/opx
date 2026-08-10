@@ -65,6 +65,15 @@ command, and the environment `opx` inherits.
   compromised account.
 - The confirmation is only as good as your reading of it. `opx` makes the
   request legible — it cannot make an approval considered.
+- An agent sandbox that blocks the 1Password socket blocks `opx` too, and
+  there is no setting that opens one without the other. The sandbox
+  authorizes a socket *path*, and `opx` reaches 1Password by running `op`
+  against that same socket — so allowlisting it to make `opx` work also
+  makes plain `op read` succeed, silently, for every other sandboxed
+  process, for as long as the session lives. Leave it blocked and run `opx`
+  outside the sandbox. The failure is doing useful work there: it keeps each
+  read a visible, individually approved step rather than an ambient
+  capability.
 
 ## Installation
 

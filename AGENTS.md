@@ -409,6 +409,17 @@ codebase's reviews have actually failed; weight them accordingly.
   System Settings › Sound is the configuration surface. A caller can reach
   that too, but only by muting the machine globally and persistently, which
   is the difference that matters. See `dialogScript` in `internal/prompt`.
+- Putting a broker or daemon between the caller and `op` — a long-lived
+  process holding the only `op` relationship, with `opx` reduced to a thin
+  client. It is the one shape that lets an agent sandbox admit `opx` while
+  keeping raw `op` blocked, and it was rejected in 2026-08: measured against
+  simply leaving the socket blocked and escalating per read, it buys
+  ergonomics rather than a security property, and the prompt fatigue it
+  creates has no answer that isn't the `op` session cache under a new name.
+  Reopening it takes out-of-process caller identity *and* evidence the
+  current posture is failing — the argument, and why those two are both
+  required, is in
+  [`dev_docs/decisions/broker-between-caller-and-op.md`](dev_docs/decisions/broker-between-caller-and-op.md).
 - Reintroducing `exec.LookPath`, or a bare command name, for any
   security-critical helper. See invariant 7 — the lookup itself is the
   vulnerability, not just what the helper does afterwards.
